@@ -18,7 +18,6 @@ def home():
     return "Admin Survey Manager Bot is Fully Online!"
 
 def run_flask():
-    # Render က တောင်းဆိုတဲ့ Port ကို Auto Bind လုပ်ပေးရန်
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -76,19 +75,17 @@ async def send_survey(event):
     if event.sender_id != OWNER_ID:
         return
         
-    # Group ထဲက Admin အားလုံးကို လှမ်းဆွဲထုတ်ပြီး ကပ်လျက် Mention တည်ဆောက်ခြင်း
     try:
         admins = await bot.get_participants(TARGET_CHAT_ID, filter=ChannelParticipantsAdmins)
         mention_list = []
         for adm in admins:
-            if adm.bot: # Bot တွေကို ဖယ်ထုတ်မယ်
+            if adm.bot:
                 continue
             if adm.username:
                 mention_list.append(f"@{adm.username}")
             else:
                 mention_list.append(f"[{adm.first_name}](tg://user?id={adm.id})")
         
-        # ဘေးချင်းကပ်လျက် Space ခြားပြီး ပေါင်းစပ်ခြင်း
         adjacent_mentions = " ".join(mention_list) if mention_list else "Admin များအားလုံး"
     except Exception as e:
         print(f"Error fetching admins: {e}")
@@ -114,10 +111,10 @@ async def send_survey(event):
     
     await bot.send_message(TARGET_CHAT_ID, survey_text, buttons=buttons)
     if event.is_private:
-        await event.reply("✅ Group ထဲကို Admin အားလုံးကို ကပ်လျက် Mention တန်းစီပြီး စစ်တမ်းပို့လိုက်ပြီ ဆရာကြီး!")
+        await event.reply("✅ Group ထဲကို စစ်တမ်း ထပ်မံပေးပို့လိုက်ပြီ ဆရာကြီး!")
 
 # ==========================================
-# 🔘 INLINE BUTTON CLICK HANDLER
+# 🔘 INLINE BUTTON CLICK HANDLER (FIXED)
 # ==========================================
 @bot.on(events.CallbackQuery(pattern=r'^slot_(.+)$'))
 async def handle_survey_click(event):
@@ -128,7 +125,13 @@ async def handle_survey_click(event):
         await event.answer("❌ မင်း Admin မဟုတ်လို့ နှိပ်ခွင့်မရှိဘူး ငါ့ကောင်!", alert=True)
         return
         
-    slot_key = event.pattern_match.group(1)
+    # 🎯 FIX: Telethon ရဲ့ Bytes Data ကို String အဖြစ်အသေပြောင်းလဲခြင်း
+    try:
+        raw_data = event.data.decode('utf-8') # e.g., "slot_morning"
+        slot_key = raw_data.replace("slot_", "") # e.g., "morning"
+    except Exception:
+        slot_key = "unknown"
+        
     slot_mapping = {
         "morning": "မနက်ပိုင်း",
         "afternoon": "နေ့လည်ပိုင်း",
@@ -137,11 +140,19 @@ async def handle_survey_click(event):
     }
     slot_text = slot_mapping.get(slot_key, "မသိရသောအချိန်")
     
+    if slot_text == "မသိရသောအချိန်":
+        # အပိုဆောင်း စစ်ဆေးချက်အရ တိုက်ရိုက် Regex Match ကိုပါ သုံးကြည့်မည်
+        match_key = event.pattern_match.group(1)
+        if isinstance(match_key, bytes):
+            match_key = match_key.decode('utf-8')
+        slot_text = slot_mapping.get(match_key, "မသိရသောအချိန်")
+        slot_key = match_key
+        
     today_str = datetime.now().strftime("%Y-%m-%d")
     username = sender.username if sender.username else ""
     display_name = sender.first_name if sender.first_name else "Admin"
     
-    # နေ့စဉ် ပြောင်းလဲနှိပ်နိုင်ရန် DB ထဲမှာ ထပ်မံ Update ပြုလုပ်ခြင်း
+    # DB ထဲ သမိုင်းမှတ်တမ်းသွင်းခြင်း
     survey_col.update_one(
         {"user_id": user_id, "date": today_str},
         {"$set": {
@@ -199,15 +210,13 @@ async def auto_alert_monitor_loop():
             current_slot, slot_text = get_current_time_slot()
             current_time = time.time()
             
-            # 🎯 [ထပ်ဖြည့်လိုက်သည့်အချက်] လက်ရှိ Group ထဲမှာ ရှိနေတဲ့ Live Admin စာရင်းကို အရင်ဆွဲထုတ်မည်
             try:
                 live_admins = await bot.get_participants(TARGET_CHAT_ID, filter=ChannelParticipantsAdmins)
                 live_admin_ids = [adm.id for adm in live_admins if not adm.bot]
             except Exception as e:
                 print(f"Error fetching live admins in loop: {e}")
-                live_admin_ids = [] # Error တက်ရင် ခနကျော်ထားမည်
+                live_admin_ids = []
 
-            # ဒေတာဘေ့စ်ထဲက စာမလာရိုက်ရသေးသော Admin များကို ရှာမည်
             unactive_admins = list(survey_col.find({
                 "date": today_str,
                 "chosen_slot": current_slot,
@@ -218,12 +227,9 @@ async def auto_alert_monitor_loop():
             to_mention_list = []
             
             for adm in unactive_admins:
-                # 🛡️ စစ်ဆေးချက် - ခလုတ်နှိပ်ထားပေမယ့် အခုလက်ရှိ Admin စာရင်းထဲမှာ မရှိတော့ရင် (ထွက်သွားရင်) ကျော်ပစ်မယ်
                 if live_admin_ids and (adm["user_id"] not in live_admin_ids):
-                    print(f"Skipping demoted/left admin: {adm['display_name']}")
                     continue
                     
-                # ၄၅ မိနစ် သို့မဟုတ် တစ်နာရီခြား တစ်ခါစီ စစ်ဆေးသတိပေးရန်
                 if current_time - adm.get("last_warn_time", 0) >= 2700:
                     new_warn_count = adm.get("warn_count", 0) + 1
                     
@@ -247,7 +253,7 @@ async def auto_alert_monitor_loop():
                 alert_payload = (
                     f"🚨 **GP လာရမ်း သတိပေးချက်!**\n\n"
                     f"{adjacent_mentions}\n\n"
-                    f"မင်းတို့တွေ ဒီအချိန် ({slot_text}) အားတယ်လို့ ပြောထားပြီး Gp ထဲ ပျောက်နေတယ်..လူနှစ်ယောက်စီထည့်ပေးပြီ စကားပြောကြအုံး"
+                    f"မင်းတို့တွေ ဒီအချိန် ({slot_text}) အားတယ်လို့ ပြောထားပြီး Gp ထဲ ပျောက်နေတယ်! ချက်ချင်း လာရမ်းကြတော့! ⚔️"
                 )
                 await bot.send_message(TARGET_CHAT_ID, alert_payload)
                 
@@ -257,7 +263,7 @@ async def auto_alert_monitor_loop():
         await asyncio.sleep(300)
 
 # ==========================================
-# 🏁 ၈။ MAIN STARTUP WITH FLASK THREADING
+# 🏁 MAIN STARTUP
 # ==========================================
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
@@ -267,12 +273,10 @@ async def main():
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
-    # Flask Web Server ကို Thread သီးသန့်ခွဲပြီး Background တွင် မောင်းနှင်မည်
     print("🌐 Starting Background Flask Server for Render Port Binding...")
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
     
-    # Telethon Main Bot အား Run စေခြင်း
     asyncio.run(main())
 
