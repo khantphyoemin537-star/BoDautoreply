@@ -20,7 +20,6 @@ def home():
     return "Chaos Master Bot is fully online and keeping the loop alive!"
 
 def run_flask():
-    # Render က ပေးတဲ့ PORT သို့မဟုတ် ပုံမှန် 10000 ကို ယူသုံးပါမည်
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -43,7 +42,7 @@ MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["cluster0"]
 
-talk_col = db["random_talk"]
+talker_col = db["talker"]
 bots_col = db["bot_tokens"] 
 
 bot = TelegramClient('chaos_master_bot', API_ID, API_HASH)
@@ -156,15 +155,23 @@ async def generate_and_run_debate(chat_id, topic, trigger_event=None):
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(None, lambda: requests.post(AI_URL, headers=headers, json=payload, timeout=30))
         res_data = response.json()
-        raw_content = res_data['choices'][0]['message']['content']
         
+        # 🔍 [အသစ်ပြင်ဆင်ချက်] GitHub က ဘာ Error ပေးလဲဆိုတာ ဖော်ထုတ်စစ်ဆေးသည့်အပိုင်း
+        if "choices" not in res_data:
+            error_details = res_data.get("error", res_data)
+            print(f"❌ GitHub API Raw Error: {res_data}")
+            if trigger_event:
+                await trigger_event.reply(f"❌ GitHub AI ကနေ အကြောင်းပြန်ချက် ငြင်းပယ်ခံရသည် -\n`{error_details}`")
+            return
+            
+        raw_content = res_data['choices'][0]['message']['content']
         script_data = json.loads(raw_content)
         conversation = script_data.get("conversation", script_data) if isinstance(script_data, dict) else script_data
         
     except Exception as e:
         print(f"❌ AI Model Query Error: {e}")
         if trigger_event:
-            await trigger_event.reply(f"❌ AI Model Query အလုပ်မလုပ်ပါ- {e}")
+            await trigger_event.reply(f"❌ AI Model Query စနစ် ချို့ယွင်းချက်- {e}")
         return
 
     for turn in conversation:
@@ -228,14 +235,14 @@ async def random_chime_in(chat_id, active_bots):
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(None, lambda: requests.post(AI_URL, headers=headers, json=payload, timeout=15))
         res_data = response.json()
-        ai_reply = res_data['choices'][0]['message']['content'].strip()
         
-        chosen_bot_data = random.choice(active_bots)
-        full_bot = bots_col.find_one({"bot_id": chosen_bot_data["bot_id"]})
-        
-        if full_bot:
-            await bot_speak(full_bot["token"], chat_id, ai_reply, typing_time=random.randint(2, 3))
+        if "choices" in res_data:
+            ai_reply = res_data['choices'][0]['message']['content'].strip()
+            chosen_bot_data = random.choice(active_bots)
+            full_bot = bots_col.find_one({"bot_id": chosen_bot_data["bot_id"]})
             
+            if full_bot:
+                await bot_speak(full_bot["token"], chat_id, ai_reply, typing_time=random.randint(2, 3))
     except Exception as e:
         print(f"Chime-in Error: {e}")
 
@@ -254,7 +261,7 @@ async def background_chatter_loop():
         current_time = time.time()
         idle_duration = current_time - LAST_MESSAGE_TIME
         
-        if idle_duration >= 1200: 
+        if idle_duration >= 120: 
             print("💤 Group is dead. Triggering AI conversation to revive it...")
             
             random_docs = list(talker_col.aggregate([{"$sample": {"size": 3}}]))
@@ -288,11 +295,10 @@ async def main():
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
-    # 🚀 Flask Server ကို background thread အဖြစ် အရင်စမောင်းပြီး Render Port Binding ကို ဖြေရှင်းပါမည်
     print("🌐 Starting Background Flask Server for Render...")
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
     
-    # 🤖 Main Bot ကို Async Loop အောက်တွင် ဆက်မောင်းမည်
     asyncio.run(main())
+
