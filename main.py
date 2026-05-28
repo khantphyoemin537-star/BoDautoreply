@@ -32,8 +32,8 @@ API_HASH = 'd15b4226b81724722279bae6af69e22d'
 OWNER_ID = 7693106830             # ✅ မင်းရဲ့ Telegram ID
 TARGET_CHAT_ID = -1003580630981  # ✅ မင်းရဲ့ 8k Group ID
 
-# 🐙 GitHub Models API Configuration (GPT-4o-mini)
-AI_API_KEY = "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" 
+# 🐙 GitHub Models API Configuration (Render Env တန်ဖိုးမှ လှမ်းဖတ်မည်)
+AI_API_KEY = os.environ.get("AI_API_KEY", "") 
 AI_URL = "https://models.inference.ai.azure.com/chat/completions"
 MODEL_NAME = "gpt-4o-mini"
 
@@ -117,6 +117,11 @@ async def learn_style(event):
 # 🔮 ၃။ CORE DEBATE ENGINE
 # ==========================================
 async def generate_and_run_debate(chat_id, topic, trigger_event=None):
+    if not AI_API_KEY:
+        if trigger_event:
+            await trigger_event.reply("❌ Render မှာ AI_API_KEY မထည့်ရသေးပါဘူး ဆရာကြီး။")
+        return
+
     active_bots = list(bots_col.find({"active": True}))
     if not active_bots:
         if trigger_event:
@@ -156,10 +161,8 @@ async def generate_and_run_debate(chat_id, topic, trigger_event=None):
         response = await loop.run_in_executor(None, lambda: requests.post(AI_URL, headers=headers, json=payload, timeout=30))
         res_data = response.json()
         
-        # 🔍 [အသစ်ပြင်ဆင်ချက်] GitHub က ဘာ Error ပေးလဲဆိုတာ ဖော်ထုတ်စစ်ဆေးသည့်အပိုင်း
         if "choices" not in res_data:
             error_details = res_data.get("error", res_data)
-            print(f"❌ GitHub API Raw Error: {res_data}")
             if trigger_event:
                 await trigger_event.reply(f"❌ GitHub AI ကနေ အကြောင်းပြန်ချက် ငြင်းပယ်ခံရသည် -\n`{error_details}`")
             return
@@ -169,7 +172,6 @@ async def generate_and_run_debate(chat_id, topic, trigger_event=None):
         conversation = script_data.get("conversation", script_data) if isinstance(script_data, dict) else script_data
         
     except Exception as e:
-        print(f"❌ AI Model Query Error: {e}")
         if trigger_event:
             await trigger_event.reply(f"❌ AI Model Query စနစ် ချို့ယွင်းချက်- {e}")
         return
@@ -208,14 +210,14 @@ async def monitor_group_activity(event):
     if event.sender_id not in our_bot_ids:
         LAST_MESSAGE_TIME = time.time()
         
-        if random.random() < 0.03: 
+        if random.random() < 0.5: 
             asyncio.create_task(random_chime_in(event.chat_id, active_bots))
 
 # ==========================================
 # 🤫 ၆။ RANDOM CHIME-IN (လူရှုပ်ချိန် ကြားဖြတ် ဝင်ပြောခြင်း)
 # ==========================================
 async def random_chime_in(chat_id, active_bots):
-    if not active_bots: return
+    if not active_bots or not AI_API_KEY: return
     
     random_doc = list(talker_col.aggregate([{"$sample": {"size": 1}}]))
     if not random_doc: return
@@ -254,16 +256,12 @@ async def background_chatter_loop():
     
     while not bot.is_connected():
         await asyncio.sleep(5)
-        
-    print("⏰ Background Idle Chatter Loop Started Successfully...")
     
     while True:
         current_time = time.time()
         idle_duration = current_time - LAST_MESSAGE_TIME
         
         if idle_duration >= 120: 
-            print("💤 Group is dead. Triggering AI conversation to revive it...")
-            
             random_docs = list(talker_col.aggregate([{"$sample": {"size": 3}}]))
             seeds = [d.get("user_message", "") for d in random_docs if d.get("user_message")]
             
@@ -289,7 +287,6 @@ async def main():
     for t in provided_tokens:
         b_id = int(t.split(":")[0])
         bots_col.update_one({"bot_id": b_id}, {"$set": {"bot_id": b_id, "token": t, "active": True}}, upsert=True)
-    print("📦 Database pre-seeded with your 2 Bot Tokens.")
     
     asyncio.create_task(background_chatter_loop()) 
     await bot.run_until_disconnected()
@@ -301,4 +298,3 @@ if __name__ == '__main__':
     flask_thread.start()
     
     asyncio.run(main())
-
