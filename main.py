@@ -10,7 +10,6 @@ from pymongo import MongoClient
 # ==========================================
 # ⚙️ CONFIGURATION & TOKENS
 # ==========================================
-# 🤖 Main Bot (Bot 1) ကို Telethon မောင်းရန် သုံးပါမည်
 MAIN_BOT_TOKEN = "8704743008:AAEpZ39-YyrziDy2DK7XmGoMDG5pAbc_h8Y"
 API_ID = 35766004
 API_HASH = 'd15b4226b81724722279bae6af69e22d'
@@ -28,31 +27,28 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["cluster0"]
 
 talker_col = db["talker"]
-bots_col = db["bot_tokens"] # Bot Tokens များ သိမ်းဆည်းမည့် နေရာ
+bots_col = db["bot_tokens"] 
 
 bot = TelegramClient('chaos_master_bot', API_ID, API_HASH)
 style_guide = "မြန်မာဆန်ဆန်၊ လူငယ်ဆန်ဆန် စကားပြောပါ။ စာလုံးပေါင်း သိပ်မမှန်လည်း ရသည်။"
-LAST_MESSAGE_TIME = time.time()  # နောက်ဆုံး စာဝင်ခဲ့သည့်အချိန် Tracking
+LAST_MESSAGE_TIME = time.time()  
 
 print("🍃 Database and Main Bot Initialized...")
 
 # ==========================================
-# 🛠️ HELPER FUNCTION: BOT API SENDER (Bot မြား စာပို့/စာရိုကျဟနျပွရနျ)
+# 🛠️ HELPER FUNCTION: BOT API SENDER
 # ==========================================
 async def bot_speak(token, chat_id, text, typing_time=3):
-    """ Telegram Bot API ကိုသုံးပြီး စာရိုက်ဟန်ပြသကာ စာပို့ခြင်း """
     loop = asyncio.get_event_loop()
     
-    # ၁။ စာရိုက်နေသည့် ပုံစံပြသခြင်း (Typing Action)
     action_url = f"https://api.telegram.org/bot{token}/sendChatAction"
     try:
         await loop.run_in_executor(None, lambda: requests.post(action_url, json={"chat_id": chat_id, "action": "typing"}, timeout=5))
     except Exception:
         pass
         
-    await asyncio.sleep(typing_time) # စာရိုက်ချိန် ကြာမြင့်မှု
+    await asyncio.sleep(typing_time) 
     
-    # ၂။ စာသား ပို့လိုက်ခြင်း
     msg_url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
         await loop.run_in_executor(None, lambda: requests.post(msg_url, json={"chat_id": chat_id, "text": text}, timeout=10))
@@ -60,7 +56,7 @@ async def bot_speak(token, chat_id, text, typing_time=3):
         print(f"❌ Bot Send Message Error: {e}")
 
 # ==========================================
-# 📥 ၁။ ADD NEW BOT TOKEN (/addbot) - Bot DM တွင်သာ
+# 📥 ၁။ ADD NEW BOT TOKEN (/addbot)
 # ==========================================
 @bot.on(events.NewMessage(pattern=r'^/addbot\s+(.+)$'))
 async def add_bot_token(event):
@@ -72,7 +68,6 @@ async def add_bot_token(event):
         await event.reply("❌ Bot Token ပုံစံ မှားနေပါတယ် ဆရာကြီး။")
         return
         
-    # Token ထဲကနေ Bot ID ကို ခွဲထုတ်ခြင်း (ဥပမာ 8111794244)
     bot_id = int(new_token.split(":")[0])
     
     bots_col.update_one(
@@ -103,7 +98,7 @@ async def learn_style(event):
         await event.reply("⚠️ talker collection ထဲမှာ ဒေတာရှာမတွေ့လို့ ပုံမှန် ပုံစံအတိုင်းပဲ သွားပါမယ်။")
 
 # ==========================================
-# 🔮 ၃။ CORE DEBATE ENGINE (ဆွေးနွေးငြင်းခုံမှု ဖန်တီးပေးသည့် Core Function)
+# 🔮 ၃။ CORE DEBATE ENGINE
 # ==========================================
 async def generate_and_run_debate(chat_id, topic, trigger_event=None):
     active_bots = list(bots_col.find({"active": True}))
@@ -155,7 +150,6 @@ async def generate_and_run_debate(chat_id, topic, trigger_event=None):
             await trigger_event.reply(f"❌ AI Model Query အလုပ်မလုပ်ပါ- {e}")
         return
 
-    # 🚀 BOTS EXECUTION LOOP (တစ်လှည့်စီ စကားဝင်ပြောစေခြင်း)
     for turn in conversation:
         bot_idx = turn.get("bot_index", 0)
         msg_text = turn.get("text", "")
@@ -164,11 +158,7 @@ async def generate_and_run_debate(chat_id, topic, trigger_event=None):
             continue
             
         current_bot_token = active_bots[bot_idx]["token"]
-        
-        # Helper Function ကို သုံးပြီး Bot API မှ စာလှမ်းပို့စေခြင်း
         await bot_speak(current_bot_token, chat_id, msg_text, typing_time=random.randint(2, 4))
-            
-        # ⏱️ စကားပြောများ ချိန်ညှိချက် Delay (၆ စက္ကန့်မှ ၁၂ စက္ကန့်)
         await asyncio.sleep(random.randint(6, 12))
 
 # ==========================================
@@ -188,15 +178,12 @@ async def let_s_talk(event):
 async def monitor_group_activity(event):
     global LAST_MESSAGE_TIME
     
-    # လက်ရှိ active ဖြစ်နေတဲ့ Bot ID များကို စစ်ထုတ်ရန် ဆွဲထုတ်ခြင်း
     active_bots = list(bots_col.find({"active": True}, {"bot_id": 1}))
     our_bot_ids = [b["bot_id"] for b in active_bots]
     
-    # ဝင်လာတဲ့ စာက ငါတို့ရဲ့ Bot တွေဆီက မဟုတ်ရင် (လူတွေပြောနေတာဖြစ်ရင်) အချိန်ကို Reset ချမယ်
     if event.sender_id not in our_bot_ids:
         LAST_MESSAGE_TIME = time.time()
         
-        # 🔥 လူရှုပ်နေချိန်မှာ 3% အခွင့်အရေးနဲ့ Bot တစ်ကောင်က ဝင်ညှပ်ထောက်မည့်စနစ်
         if random.random() < 0.03: 
             asyncio.create_task(random_chime_in(event.chat_id, active_bots))
 
@@ -206,7 +193,6 @@ async def monitor_group_activity(event):
 async def random_chime_in(chat_id, active_bots):
     if not active_bots: return
     
-    # DB ထဲကနေ Random စကားလုံးတစ်လုံး နှိုက်ယူခြင်း
     random_doc = list(talker_col.aggregate([{"$sample": {"size": 1}}]))
     if not random_doc: return
     
@@ -227,9 +213,7 @@ async def random_chime_in(chat_id, active_bots):
         res_data = response.json()
         ai_reply = res_data['choices'][0]['message']['content'].strip()
         
-        # Random Bot တစ်ကောင်ကို ရွေးပြီး စာပို့ခိုင်းခြင်း
         chosen_bot_data = random.choice(active_bots)
-        # Token အပြည့်အစုံကို DB က ပြန်ရှာခြင်း
         full_bot = bots_col.find_one({"bot_id": chosen_bot_data["bot_id"]})
         
         if full_bot:
@@ -242,6 +226,8 @@ async def random_chime_in(chat_id, active_bots):
 # ⏰ ၇။ BACKGROUND IDLE CHATTER LOOP (လူရှင်းချိန် စကားစမြည်ပြောခြင်း)
 # ==========================================
 async def background_chatter_loop():
+    global LAST_MESSAGE_TIME # ✅ ကြေညာချက်ကို နေရာမှန်ဖြစ်တဲ့ Function ထိပ်ဆုံးကို ရွှေ့လိုက်ပြီ!
+    
     while not bot.is_connected():
         await asyncio.sleep(5)
         
@@ -251,8 +237,7 @@ async def background_chatter_loop():
         current_time = time.time()
         idle_duration = current_time - LAST_MESSAGE_TIME
         
-        # ⏱️ စာမတက်တာ မိနစ် ၂၀ ကျော်သွားပြီဆိုရင် (၁၂၀၀ စက္ကန့်)
-        if idle_duration >= 120: 
+        if idle_duration >= 1200: 
             print("💤 Group is dead. Triggering AI conversation to revive it...")
             
             random_docs = list(talker_col.aggregate([{"$sample": {"size": 3}}]))
@@ -262,10 +247,9 @@ async def background_chatter_loop():
                 seed_topic = f"မြန်မာလူငယ်တွေ စိတ်ဝင်စားတတ်တဲ့ အကြောင်းအရာများ နှင့် စကားစုများ- {', '.join(seeds)}"
                 await generate_and_run_debate(TARGET_CHAT_ID, seed_topic)
                 
-            global LAST_MESSAGE_TIME
             LAST_MESSAGE_TIME = time.time()
             
-        await asyncio.sleep(300) # ၅ မိနစ်တစ်ခါ ပတ်စစ်ပေးမည့်စနစ်
+        await asyncio.sleep(300) 
 
 # ==========================================
 # 🏁 ၈။ MAIN STARTUP EXTRACTION WITH AUTO-SEED
@@ -274,7 +258,6 @@ async def main():
     await bot.start(bot_token=MAIN_BOT_TOKEN)
     print("✅ Chaos Catalyst Master Bot is fully online!")
     
-    # ⚙️ [အော်တိုစနစ်] မင်းပေးထားတဲ့ Bot Token ၂ ခုကို DB ထဲ အော်တို ထည့်ပေးထားမည့်အကွက်
     provided_tokens = [
         "8704743008:AAEpZ39-YyrziDy2DK7XmGoMDG5pAbc_h8Y",
         "8111794244:AAGpkLE7h5x_IYFvjkVCbJosDC1TFbCGxcQ"
