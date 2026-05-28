@@ -1,4 +1,5 @@
-telethon
-openai
+Telethon
+requests
+pymongo
+dnspython
 flask
-request 
