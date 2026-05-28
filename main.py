@@ -42,7 +42,7 @@ MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["cluster0"]
 
-talker_col = db["talker"]
+talk_col = db["random_talk"]
 bots_col = db["bot_tokens"] 
 
 bot = TelegramClient('chaos_master_bot', API_ID, API_HASH)
