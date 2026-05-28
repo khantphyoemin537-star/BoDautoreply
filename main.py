@@ -5,7 +5,7 @@ import os
 import threading
 from flask import Flask
 from telethon import TelegramClient, events
-from openai import OpenAI
+from openai import AsyncOpenAI  # Async Client သို့ ပြောင်းလဲထားသည်
 
 # ==========================================
 # 🌐 FLASK KEEP-ALIVE FOR RENDER (Port Fix)
@@ -30,8 +30,8 @@ BOT_TOKEN = "8704743008:AAEpZ39-YyrziDy2DK7XmGoMDG5pAbc_h8Y"
 API_ID = 35766004
 API_HASH = 'd15b4226b81724722279bae6af69e22d'
 
-# Groq AI Client setup
-ai_client = OpenAI(
+# Groq AI Async Client setup
+ai_client = AsyncOpenAI(
     base_url="https://api.groq.com/openai/v1",
     api_key=GROQ_API_KEY
 )
@@ -42,6 +42,10 @@ bot = TelegramClient('bod_ai_bot', API_ID, API_HASH)
 # Group Status Memory
 talk_status = {}
 active_chats = set()  
+
+# Bot Profile Cache (Rate Limit ကျော်ရန်)
+BOT_ID = None
+BOT_USERNAME = None
 
 logging.basicConfig(level=logging.INFO)
 
@@ -55,7 +59,7 @@ async def is_admin(event):
         permissions = await event.client.get_permissions(event.chat_id, event.sender_id)
         return permissions.is_admin or permissions.is_creator
     except Exception as e:
-        print(f"Admin Check Error: {e}")
+        print(f"❌ Admin Check Error: {e}")
         return False
 
 # ==========================================
@@ -69,6 +73,7 @@ async def talk_on_handler(event):
     chat_id = event.chat_id
     talk_status[chat_id] = True
     active_chats.add(chat_id)
+    print(f"🟢 AI TALK ON activated for chat: {chat_id}")
     
     border_on = (
         "┏━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
@@ -88,6 +93,7 @@ async def talk_off_handler(event):
     chat_id = event.chat_id
     talk_status[chat_id] = False
     active_chats.add(chat_id)
+    print(f"🔴 AI TALK OFF activated for chat: {chat_id}")
     
     border_off = (
         "┏━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
@@ -105,16 +111,13 @@ async def talk_off_handler(event):
 async def reminder_loop():
     await bot.wait_until_ready()
     while True:
-        # Wait for 3 Hours (3 * 3600 Seconds)
         await asyncio.sleep(3 * 3600)
-        
         for chat_id in list(active_chats):
             status = talk_status.get(chat_id, False)
-            
             if status:
                 remind_msg = (
                     "╔══════════════════════════╗\n"
-                    "  🔔 𝗕𝗼Ｄ 𝗦𝗬𝗦𝗧𝗘𝗠 👑𝗘𝗠𝗜𝗡𝗗𝗘𝗥\n"
+                    "  🔔 𝗕𝗼Ｄ 𝗦𝗬𝗦𝗧𝗘𝗠 𝗥𝗘𝗠𝗜𝗡𝗗block\n"
                     "╚══════════════════════════╝\n"
                     "📢 Current Status: [ 🟢 TALK ON ]\n"
                     "🤖 AI Engine is running smoothly and listening."
@@ -122,16 +125,15 @@ async def reminder_loop():
             else:
                 remind_msg = (
                     "╔══════════════════════════╗\n"
-                    "  🔔 𝗕𝗼Ｄ 𝗦𝗬𝗦𝗧𝗘𝗠 👑𝗘𝗠𝗜𝗡𝗗𝗘𝗥\n"
+                    "  🔔 𝗕𝗼Ｄ 𝗦𝗬𝗦𝗧𝗘𝗠 👑𝗘𝗠𝗜𝗡𝗗block\n"
                     "╚══════════════════════════╝\n"
                     "📢 Current Status: [ 🔴 TALK OFF ]\n"
                     "📴 AI Engine is currently sleeping. Use /talkon to activate."
                 )
-                
             try:
                 await bot.send_message(chat_id, remind_msg)
             except Exception as e:
-                print(f"Reminder Error to {chat_id}: {e}")
+                print(f"❌ Reminder Error to {chat_id}: {e}")
 
 # ==========================================
 # 🤖 AI AUTO REPLY HANDLER
@@ -146,17 +148,21 @@ async def ai_chat_handler(event):
         
     chat_id = event.chat_id
     
+    # Render Logs မှာ စာဝင်မဝင် စစ်ဆေးရန် စာသားထုတ်ပေးမည်
+    if event.text:
+        print(f"📩 Log: Message received in chat {chat_id}: {event.text[:30]}")
+
+    # Talk status စစ်ဆေးခြင်း
     if not talk_status.get(chat_id, False):
         return
         
-    me = await bot.get_me()
-    
     is_mentioned = event.mentioned  
     is_reply_to_bot = False
     
+    # Cached BOT_ID ကို သုံးပြီး စစ်ဆေးခြင်း (ပိုမိုမြန်ဆန်သည်)
     if event.is_reply:
         reply_msg = await event.get_reply_message()
-        if reply_msg and reply_msg.sender_id == me.id:
+        if reply_msg and reply_msg.sender_id == BOT_ID:
             is_reply_to_bot = True  
             
     # Trigger Conditions (Mention/Reply = 100% | Normal Chat = 15%)
@@ -165,9 +171,9 @@ async def ai_chat_handler(event):
     if not should_reply:
         return
 
+    print(f"🧠 Processing AI Reply for chat {chat_id}...")
     context_messages = []
     
-    # 🧠 ADVANCED SYSTEM PROMPT (Intellectual, Human-like Admin Persona)
     system_instruction = {
         "role": "system",
         "content": (
@@ -186,7 +192,7 @@ async def ai_chat_handler(event):
     try:
         async for msg in bot.iter_messages(chat_id, limit=6):
             if msg.text and not msg.text.startswith('/'):
-                role = "assistant" if msg.sender_id == me.id else "user"
+                role = "assistant" if msg.sender_id == BOT_ID else "user"
                 name = msg.sender.first_name if msg.sender and hasattr(msg.sender, 'first_name') else "User"
                 context_messages.append({"role": role, "content": f"{name}: {msg.text}"})
                 
@@ -196,7 +202,8 @@ async def ai_chat_handler(event):
         final_messages = [system_part] + chat_part
         
         async with bot.action(chat_id, 'typing'):
-            response = ai_client.chat.completions.create(
+            # Async Call အဖြစ် ပြောင်းလဲထားသဖြင့် Bot လုံးဝ Freeze မဖြစ်တော့ပါ
+            response = await ai_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=final_messages,
                 max_tokens=200,
@@ -204,28 +211,32 @@ async def ai_chat_handler(event):
             )
             
             ai_reply = response.choices[0].message.content.strip()
-            
-            # Direct Reply without borders
             await event.reply(ai_reply)
+            print(f"🤖 AI Replied successfully to chat {chat_id}")
             
     except Exception as e:
-        print(f"Groq AI Error: {e}")
+        print(f"❌ Groq AI Error: {e}")
 
 # ==========================================
 # 🚀 RUN BOT SYSTEM
 # ==========================================
 async def main():
-    # Render Port Timeout မဖြစ်အောင် Background Thread ဖြင့် Flask အား အရင်မောင်းနှင်မည်
+    global BOT_ID, BOT_USERNAME
     threading.Thread(target=run_flask, daemon=True).start()
     
     print("🚀 Starting BoD Bot System...")
     await bot.start(bot_token=BOT_TOKEN)
     
-    # Run 3-Hour Reminder in background
-    bot.loop.create_task(reminder_loop())
+    # Bot Profile အား တစ်ခါတည်း Cache လုပ်သိမ်းဆည်းခြင်း
+    me = await bot.get_me()
+    BOT_ID = me.id
+    BOT_USERNAME = me.username
+    print(f"✅ Bot Profile Cached: ID={BOT_ID}, Username=@{BOT_USERNAME}")
     
+    bot.loop.create_task(reminder_loop())
     print("✅ BoD Bot is fully Active!")
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
     asyncio.run(main())
+
