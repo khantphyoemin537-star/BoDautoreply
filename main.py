@@ -1,11 +1,29 @@
 import asyncio
 import random
 import logging
+import os
+import threading
+from flask import Flask
 from telethon import TelegramClient, events
 from openai import OpenAI
 
-# ==========================================\n# ⚙️ CONFIGURATION & TOKENS
-# ==========================================\nGROQ_API_KEY = "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"
+# ==========================================
+# 🌐 FLASK KEEP-ALIVE FOR RENDER (Port Fix)
+# ==========================================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "BoD AI System is Active!"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# ==========================================
+# ⚙️ CONFIGURATION & TOKENS
+# ==========================================
+GROQ_API_KEY = "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"
 BOT_TOKEN = "8704743008:AAEpZ39-YyrziDy2DK7XmGoMDG5pAbc_h8Y"
 
 # Telegram API Credentials
@@ -27,8 +45,10 @@ active_chats = set()
 
 logging.basicConfig(level=logging.INFO)
 
-# ==========================================\n# 🛡️ ADMIN CHECK FUNCTION
-# ==========================================\nasync def is_admin(event):
+# ==========================================
+# 🛡️ ADMIN CHECK FUNCTION
+# ==========================================
+async def is_admin(event):
     if event.is_private:
         return True
     try:
@@ -38,8 +58,9 @@ logging.basicConfig(level=logging.INFO)
         print(f"Admin Check Error: {e}")
         return False
 
-# ==========================================\n# 💬 COMMANDS HANDLERS (/talkon & /talkoff)
-# ==========================================\n
+# ==========================================
+# 💬 COMMANDS HANDLERS (/talkon & /talkoff)
+# ==========================================
 @bot.on(events.NewMessage(pattern=r'^/talkon'))
 async def talk_on_handler(event):
     if not await is_admin(event):
@@ -51,7 +72,7 @@ async def talk_on_handler(event):
     
     border_on = (
         "┏━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        "┃    🤖 𝗕𝗼𝗗 𝗔𝗜 𝗦𝗬𝗦𝗧𝗘𝗠 𝗢𝗡   ┃\n"
+        "┃    🤖 𝗕𝗼Ｄ 𝗔𝗜 𝗦𝗬𝗦𝗧𝗘𝗠 𝗢𝗡   ┃\n"
         "┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
         "• Status: [ ENABLED ]\n"
         "• Notice: AI Chatbot is now active.\n"
@@ -70,7 +91,7 @@ async def talk_off_handler(event):
     
     border_off = (
         "┏━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        "┃   📴 𝗕𝗼𝗗 𝗔𝗜 𝗦𝗬𝗦𝗧𝗘𝗠 𝗢𝗙𝗙   ┃\n"
+        "┃   📴 𝗕𝗼Ｄ 𝗔𝗜 𝗦𝗬𝗦𝗧𝗘𝗠 𝗢𝗙𝗙   ┃\n"
         "┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
         "• Status: [ DISABLED ]\n"
         "• Notice: AI Chatbot is now muted.\n"
@@ -78,8 +99,10 @@ async def talk_off_handler(event):
     )
     await event.reply(border_off)
 
-# ==========================================\n# ⏰ 3-HOUR STATUS REMINDER LOOP
-# ==========================================\nasync def reminder_loop():
+# ==========================================
+# ⏰ 3-HOUR STATUS REMINDER LOOP
+# ==========================================
+async def reminder_loop():
     await bot.wait_until_ready()
     while True:
         # Wait for 3 Hours (3 * 3600 Seconds)
@@ -91,7 +114,7 @@ async def talk_off_handler(event):
             if status:
                 remind_msg = (
                     "╔══════════════════════════╗\n"
-                    "  🔔 𝗕𝗼𝗗 𝗦𝗬𝗦𝗧𝗘𝗠 👑𝗘𝗠𝗜𝗡𝗗𝗘𝗥\n"
+                    "  🔔 𝗕𝗼Ｄ 𝗦𝗬𝗦𝗧𝗘𝗠 👑𝗘𝗠𝗜𝗡𝗗𝗘𝗥\n"
                     "╚══════════════════════════╝\n"
                     "📢 Current Status: [ 🟢 TALK ON ]\n"
                     "🤖 AI Engine is running smoothly and listening."
@@ -99,7 +122,7 @@ async def talk_off_handler(event):
             else:
                 remind_msg = (
                     "╔══════════════════════════╗\n"
-                    "  🔔 𝗕𝗼𝗗 𝗦𝗬𝗦𝗧𝗘𝗠 👑𝗘𝗠𝗜𝗡𝗗𝗘𝗥\n"
+                    "  🔔 𝗕𝗼Ｄ 𝗦𝗬𝗦𝗧𝗘𝗠 👑𝗘𝗠𝗜𝗡𝗗𝗘𝗥\n"
                     "╚══════════════════════════╝\n"
                     "📢 Current Status: [ 🔴 TALK OFF ]\n"
                     "📴 AI Engine is currently sleeping. Use /talkon to activate."
@@ -110,8 +133,10 @@ async def talk_off_handler(event):
             except Exception as e:
                 print(f"Reminder Error to {chat_id}: {e}")
 
-# ==========================================\n# 🤖 AI AUTO REPLY HANDLER
-# ==========================================\n@bot.on(events.NewMessage(incoming=True))
+# ==========================================
+# 🤖 AI AUTO REPLY HANDLER
+# ==========================================
+@bot.on(events.NewMessage(incoming=True))
 async def ai_chat_handler(event):
     if event.is_private:
         return
@@ -174,20 +199,25 @@ async def ai_chat_handler(event):
             response = ai_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=final_messages,
-                max_tokens=200, # စကားလုံးအသွားအလာ ပိုမိုစုံလင်အောင် token အနည်းငယ်တိုးထားသည်
-                temperature=0.75 # ပိုပြီး လူဆန်ဆန် တွေးတောနိုင်ရန်
+                max_tokens=200,
+                temperature=0.75
             )
             
             ai_reply = response.choices[0].message.content.strip()
             
-            # Direct Reply without borders (Human Style)
+            # Direct Reply without borders
             await event.reply(ai_reply)
             
     except Exception as e:
         print(f"Groq AI Error: {e}")
 
-# ==========================================\n# 🚀 RUN BOT SYSTEM
-# ==========================================\nasync def main():
+# ==========================================
+# 🚀 RUN BOT SYSTEM
+# ==========================================
+async def main():
+    # Render Port Timeout မဖြစ်အောင် Background Thread ဖြင့် Flask အား အရင်မောင်းနှင်မည်
+    threading.Thread(target=run_flask, daemon=True).start()
+    
     print("🚀 Starting BoD Bot System...")
     await bot.start(bot_token=BOT_TOKEN)
     
@@ -199,4 +229,3 @@ async def ai_chat_handler(event):
 
 if __name__ == '__main__':
     asyncio.run(main())
-
