@@ -3,9 +3,26 @@ import random
 import json
 import time
 import requests
+import os
+import threading
+from flask import Flask
 from datetime import datetime
 from telethon import TelegramClient, events
 from pymongo import MongoClient
+
+# ==========================================
+# 🌐 0. DUMMY FLASK SERVER FOR RENDER PORT BINDING
+# ==========================================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Chaos Master Bot is fully online and keeping the loop alive!"
+
+def run_flask():
+    # Render က ပေးတဲ့ PORT သို့မဟုတ် ပုံမှန် 10000 ကို ယူသုံးပါမည်
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 # ==========================================
 # ⚙️ CONFIGURATION & TOKENS
@@ -226,7 +243,7 @@ async def random_chime_in(chat_id, active_bots):
 # ⏰ ၇။ BACKGROUND IDLE CHATTER LOOP (လူရှင်းချိန် စကားစမြည်ပြောခြင်း)
 # ==========================================
 async def background_chatter_loop():
-    global LAST_MESSAGE_TIME # ✅ ကြေညာချက်ကို နေရာမှန်ဖြစ်တဲ့ Function ထိပ်ဆုံးကို ရွှေ့လိုက်ပြီ!
+    global LAST_MESSAGE_TIME 
     
     while not bot.is_connected():
         await asyncio.sleep(5)
@@ -271,5 +288,11 @@ async def main():
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
+    # 🚀 Flask Server ကို background thread အဖြစ် အရင်စမောင်းပြီး Render Port Binding ကို ဖြေရှင်းပါမည်
+    print("🌐 Starting Background Flask Server for Render...")
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    # 🤖 Main Bot ကို Async Loop အောက်တွင် ဆက်မောင်းမည်
     asyncio.run(main())
-
