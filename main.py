@@ -1,282 +1,223 @@
-import asyncio
 import os
-import time
-import threading
-from datetime import datetime
-from flask import Flask
-from telethon import TelegramClient, events, Button
-from telethon.tl.types import ChannelParticipantsAdmins
-from pymongo import MongoClient
+import asyncio
+import random
+import logging
+from telethon import TelegramClient, events, errors
+from telethon.sessions import StringSession
+from motor.motor_asyncio import AsyncIOMotorClient
+
+# Setup basic logging to see bot activity
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ==========================================
-# 🌐 0. FLASK SERVER FOR RENDER PORT BINDING
+# ⚙️ CONFIGURATION (Credentials)
 # ==========================================
-app = Flask('')
+MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/telegram_bot?appName=Cluster0&tlsAllowInvalidCertificates=true"
+APP_ID = 39584681
+APP_HASH = 'c8c0685d6dd5b9e546093ea90d27733b'
+BOT_TOKEN = '8111794244:AAGpkLE7h5x_IYFvjkVCbJosDC1TFbCGxcQ'
 
-@app.route('/')
-def home():
-    return "Admin Survey Manager Bot is Fully Online!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# ==========================================
-# ⚙️ CONFIGURATION & TOKENS
-# ==========================================
-BOT_TOKEN = "8704743008:AAEpZ39-YyrziDy2DK7XmGoMDG5pAbc_h8Y"
-API_ID = 35766004
-API_HASH = 'd15b4226b81724722279bae6af69e22d'
 OWNER_ID = 7693106830
-TARGET_CHAT_ID = -1003580630981
+SPECIFIC_GROUP = -1003940667453
 
-# 🍃 MONGO DB CONNECTION
-MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client["cluster0"]
-survey_col = db["admin_survey"] 
+# MongoDB Connections
+client_mongo = AsyncIOMotorClient(MONGO_URI)
+db = client_mongo["telegram_bot"]
+talk_col = db["random_talk"]     # စကားပြောစာသားရင်းမြစ် ၁
+filters_col = db["filters"]       # စကားပြောစာသားရင်းမြစ် ၂
+usertalking_col = db["usertalking"]  # 👈 စကားပြောမည့် အကောင့် (၂-၁၀) ခုအား သိမ်းဆည်းမည့် New Collection
 
-bot = TelegramClient('admin_survey_session', API_ID, API_HASH)
+# Global Runtime States
+talking_clients = {}            # Live ဖြစ်နေသော Userbot Client object များကို Memory ထဲ သိမ်းဆည်းရန်
+is_crosstalk_active = False     # Cross-Talk စနစ် ပွင့်/ပိတ် Status
+crosstalk_task = None           # Background Loop လုပ်ဆောင်ချက်ကို ထိန်းချုပ်ရန် တာဝန်ခံ
 
-print("⚡ Admin Survey & Monitor System Initializing...")
-
-# ==========================================
-# 🕒 HELPER: GET CURRENT MYANMAR TIME SLOT
-# ==========================================
-def get_current_time_slot():
-    current_hour = datetime.now().hour
-    
-    if 6 <= current_hour < 12:
-        return "morning", "မနက်ပိုင်း (6AM - 12PM)"
-    elif 12 <= current_hour < 16:
-        return "afternoon", "နေ့လည်ပိုင်း (12PM - 4PM)"
-    elif 16 <= current_hour < 19:
-        return "evening", "ညနေပိုင်း (4PM - 7PM)"
-    else:
-        return "night", "ညပိုင်း (7PM - 6AM)"
+# Initialize Official Bot
+bot = TelegramClient('official_crosstalk_bot', APP_ID, APP_HASH)
 
 # ==========================================
-# 🛡️ HELPER: CHECK IF USER IS ADMIN
+# 🌍 DUMMY HTTP SERVER FOR RENDER HEALTH CHECK
 # ==========================================
-async def is_group_admin(user_id):
-    if user_id == OWNER_ID:
-        return True
+async def handle_render_health_check(reader, writer):
+    await reader.read(100)
+    response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"
+    writer.write(response.encode('utf-8'))
+    await writer.drain()
+    writer.close()
+
+async def start_dummy_web_server():
+    port = int(os.environ.get("PORT", 10000))
     try:
-        permissions = await bot.get_permissions(TARGET_CHAT_ID, user_id)
-        return permissions.is_admin
-    except Exception:
-        return False
-
-# ==========================================
-# 📢 TRIGGER SURVEY WITH ADJACENT MENTIONS (/survey)
-# ==========================================
-@bot.on(events.NewMessage(pattern=r'^/survey$'))
-async def send_survey(event):
-    if event.sender_id != OWNER_ID:
-        return
-        
-    try:
-        admins = await bot.get_participants(TARGET_CHAT_ID, filter=ChannelParticipantsAdmins)
-        mention_list = []
-        for adm in admins:
-            if adm.bot:
-                continue
-            if adm.username:
-                mention_list.append(f"@{adm.username}")
-            else:
-                mention_list.append(f"[{adm.first_name}](tg://user?id={adm.id})")
-        
-        adjacent_mentions = " ".join(mention_list) if mention_list else "Admin များအားလုံး"
+        server = await asyncio.start_server(handle_render_health_check, '0.0.0.0', port)
+        logging.info(f"🌍 Render Web Server started on port {port}")
+        async with server:
+            await server.serve_forever()
     except Exception as e:
-        print(f"Error fetching admins: {e}")
-        adjacent_mentions = "Admin များအားလုံး"
-        
-    survey_text = (
-        f"📊 **⚙️ ADMIN DAILY AVAILABILITY SURVEY** 📊\n\n"
-        f"ဟေ့ကောင်တို့ရေ... ချက်ချင်း ထနှိပ်ကြစမ်း! 👇\n{adjacent_mentions}\n\n"
-        f"ဒီနေ့အတွက် မင်းတို့ ဘယ်အချိန်တွေ အားကြလဲ? အားတဲ့အချိန်ကို အောက်က Button မှာ နှိပ်ပေးထားပါ။\n"
-        f"နှိပ်ထားတဲ့အချိန်ကျလို့ Gp ထဲ စာမလာရိုက်ရင် ၃ ခါ တိတိ Mention အော်ပြီး အလှုပ်ခံရမယ်နော်! ⏳"
-    )
-    
-    buttons = [
-        [
-            Button.inline("🌅 မနက်ပိုင်း", data="slot_morning"),
-            Button.inline("☀️ နေ့လည်ပိုင်း", data="slot_afternoon")
-        ],
-        [
-            Button.inline("🌆 ညနေပိုင်း", data="slot_evening"),
-            Button.inline("🌃 ညပိုင်း", data="slot_night")
-        ]
-    ]
-    
-    await bot.send_message(TARGET_CHAT_ID, survey_text, buttons=buttons)
-    if event.is_private:
-        await event.reply("✅ Group ထဲကို စစ်တမ်း ထပ်မံပေးပို့လိုက်ပြီ ဆရာကြီး!")
+        logging.error(f"❌ Web Server Error: {e}")
 
 # ==========================================
-# 🔘 INLINE BUTTON CLICK HANDLER (FIXED)
+# 💬 BACKEND AUTOMATED CROSSTALK SIMULATOR LOOP
 # ==========================================
-@bot.on(events.CallbackQuery(pattern=r'^slot_(.+)$'))
-async def handle_survey_click(event):
-    user_id = event.sender_id
-    sender = await event.get_sender()
+async def run_crosstalk_loop():
+    global is_crosstalk_active, talking_clients
+    logging.info("💬 Cross-talk background loop successfully activated.")
     
-    if not await is_group_admin(user_id):
-        await event.answer("❌ မင်း Admin မဟုတ်လို့ နှိပ်ခွင့်မရှိဘူး ငါ့ကောင်!", alert=True)
-        return
+    last_msg_id = None
+    
+    while is_crosstalk_active:
+        bot_count = len(talking_clients)
         
-    # 🎯 FIX: Telethon ရဲ့ Bytes Data ကို String အဖြစ်အသေပြောင်းလဲခြင်း
-    try:
-        raw_data = event.data.decode('utf-8') # e.g., "slot_morning"
-        slot_key = raw_data.replace("slot_", "") # e.g., "morning"
-    except Exception:
-        slot_key = "unknown"
+        # အကောင့် (၂) ခုအောက် နည်းနေပါက ဆက်မပြောဘဲ စနစ်ရပ်တန့်မည်
+        if bot_count < 2:
+            await bot.send_message(SPECIFIC_GROUP, "⚠️ **Chief! စကားပြောရန် အနည်းဆုံး အကောင့် (၂) ခု လိုအပ်ပါသည်။**\nကျေးဇူးပြု၍ `/string` ဖြင့် ထပ်မံဖြည့်စွက်ပေးပါ။")
+            is_crosstalk_active = False
+            break
         
-    slot_mapping = {
-        "morning": "မနက်ပိုင်း",
-        "afternoon": "နေ့လည်ပိုင်း",
-        "evening": "ညနေပိုင်း",
-        "night": "ညပိုင်း"
-    }
-    slot_text = slot_mapping.get(slot_key, "မသိရသောအချိန်")
-    
-    if slot_text == "မသိရသောအချိန်":
-        # အပိုဆောင်း စစ်ဆေးချက်အရ တိုက်ရိုက် Regex Match ကိုပါ သုံးကြည့်မည်
-        match_key = event.pattern_match.group(1)
-        if isinstance(match_key, bytes):
-            match_key = match_key.decode('utf-8')
-        slot_text = slot_mapping.get(match_key, "မသိရသောအချိန်")
-        slot_key = match_key
+        # Active ဖြစ်နေတဲ့ Bot ထဲက တစ်ခုကို ကျပန်း ရွေးချယ်ခိုင်းခြင်း
+        chosen_id = random.choice(list(talking_clients.keys()))
+        client = talking_clients[chosen_id]
         
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    username = sender.username if sender.username else ""
-    display_name = sender.first_name if sender.first_name else "Admin"
-    
-    # DB ထဲ သမိုင်းမှတ်တမ်းသွင်းခြင်း
-    survey_col.update_one(
-        {"user_id": user_id, "date": today_str},
-        {"$set": {
-            "user_id": user_id,
-            "username": username,
-            "display_name": display_name,
-            "chosen_slot": slot_key,
-            "chosen_slot_text": slot_text,
-            "warn_count": 0,
-            "active_today": False,
-            "last_warn_time": 0
-        }},
-        upsert=True
-    )
-    
-    mention_str = f"@{username}" if username else f"[{display_name}](tg://user?id={user_id})"
-    reply_msg = f"🎯 {mention_str} မင်း ဒီနေ့ **{slot_text}** အားတယ်လို့ မှတ်သားလိုက်ပြီ! အဲ့အချိန်ကျလို့ Gp ထဲ မလာရင် ၃ ခါ လှမ်းခေါ်မယ်။"
-    
-    await event.answer(f"✅ {slot_text} ကို မှတ်သားပြီးပြီ!", alert=False)
-    await event.reply(reply_msg)
-
-# ==========================================
-# 💬 TRAFFIC MONITOR
-# ==========================================
-@bot.on(events.NewMessage(chats=TARGET_CHAT_ID))
-async def monitor_admin_activity(event):
-    user_id = event.sender_id
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    current_slot, _ = get_current_time_slot()
-    
-    admin_record = survey_col.find_one({
-        "user_id": user_id, 
-        "date": today_str, 
-        "chosen_slot": current_slot
-    })
-    
-    if admin_record and not admin_record.get("active_today"):
-        survey_col.update_one(
-            {"_id": admin_record["_id"]},
-            {"$set": {"active_today": True}}
-        )
-
-# ==========================================
-# 🚨 ALERT ENGINE LOOP (LIVE ADMIN CHECK စနစ်ပါဝင်သည်)
-# ==========================================
-async def auto_alert_monitor_loop():
-    while not bot.is_connected():
-        await asyncio.sleep(5)
-        
-    print("⏰ Admin Monitoring Alert Engine Active with Live Verification...")
-    
-    while True:
         try:
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            current_slot, slot_text = get_current_time_slot()
-            current_time = time.time()
+            # DB col ၂ ခုထဲက တစ်ခုခုကနေ ကျပန်းစာသား ဆွဲထုတ်ယူခြင်း
+            chosen_col = random.choice([talk_col, filters_col])
+            pipeline = [{"$sample": {"size": 1}}]
+            cursor = chosen_col.aggregate(pipeline)
+            docs = await cursor.to_list(length=1)
+            
+            reply_text = "🎯"  # Default fallback text
+            if docs:
+                # Field အမျိုးအစား မတူညီမှုများကို လိုက်ညှိဖတ်ခြင်း
+                raw_text = docs[0].get("text") or docs[0].get("word") or docs[0].get("responses")
+                if isinstance(raw_text, list) and raw_text:
+                    reply_text = random.choice(raw_text)
+                elif isinstance(raw_text, str) and raw_text:
+                    reply_text = raw_text
+            
+            # Group ထဲက နောက်ဆုံး စာသား ID ကို ဆွဲထုတ်ပြီး Reply Chain စဉ်ဆက်မပြတ် ဆက်သွားစေရန်
+            if not last_msg_id:
+                async for m in client.iter_messages(SPECIFIC_GROUP, limit=1):
+                    last_msg_id = m.id
+            
+            # ⚡ Dynamic Typing Delay Tuning (လူအစစ်တွေ စာရိုက်နေသလို ပုံစံဖမ်းခြင်း)
+            # အကောင့်များလေ စကားပြောနှုန်း သွက်စေပြီး၊ အကောင့်နည်းရင် Flood မမိအောင် ပိုစောင့်ပါမည်
+            base_typing_delay = max(2.5, 7.0 / bot_count)
+            async with client.action(SPECIFIC_GROUP, 'typing'):
+                await asyncio.sleep(random.uniform(base_typing_delay, base_typing_delay + 1.2))
+            
+            # စာသားကို အရှေ့က စာအပေါ် Reply ထောက်ပြီး လှမ်းပို့ခြင်း
+            sent_msg = await client.send_message(
+                SPECIFIC_GROUP,
+                reply_text,
+                reply_to=last_msg_id
+            )
+            last_msg_id = sent_msg.id  # နောက်ထပ် Bot က Reply ပြန်ထောက်နိုင်ရန် ID ကို Update လုပ်ခြင်း
+            
+        except errors.rpcerrorlist.FloodWaitError as e:
+            logging.warning(f"⚠️ FloodWait Error Caught! Sleeping for {e.seconds} seconds.")
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            logging.error(f"❌ Crosstalk Interaction Error: {e}")
+            last_msg_id = None  # Loop မပြတ်သွားစေရန် ID ကို reset လုပ်ပြီး ပြန်ချိတ်ခိုင်းခြင်း
+            await asyncio.sleep(3)
+            
+        # 🛡️ Anti-Flood Global Cooldown Calculation (Telegram Group Spam filter ကျော်ရန်)
+        # အကောင့် ၁၀ ခုအထိ အများဆုံးရှိရင် ၃ စက္ကန့်ကျော်စီနားပြီး၊ အကောင့် ၂ ခုပဲရှိရင် ၅ စက္ကန့်ကျော်စီ နားပေးပါမည်
+        global_cooldown = max(3.0, random.uniform(4.5, 7.0) - (bot_count * 0.35))
+        await asyncio.sleep(global_cooldown)
+
+# ==========================================
+# 🤖 OFFICIAL BOT COMMAND HANDLERS
+# ==========================================
+@bot.on(events.NewMessage(chats=SPECIFIC_GROUP, from_users=OWNER_ID))
+async def handle_admin_commands(event):
+    global talking_clients, is_crosstalk_active, crosstalk_task
+    
+    cmd = event.message.text.strip() if event.message.text else ""
+
+    # 📥 MULTI-BOT /string MANAGEMENT (အနည်းဆုံး ၂ ခုမှ အများဆုံး ၁၀ ခုအထိ သိမ်းဆည်းရန်)
+    if cmd == "/string" and event.is_reply:
+        reply_msg = await event.get_reply_message()
+        if reply_msg and reply_msg.text:
+            session_str = reply_msg.text.strip()
+            
+            current_count = await usertalking_col.count_documents({})
+            if current_count >= 10:
+                await event.reply("❌ **Chief! စကားပြောမည့် အကောင့်အရေအတွက် အများဆုံး (၁၀) ခု ပြည့်နေပါပြီဗျာ။**")
+                return
+                
+            status_msg = await event.reply("⏳ String Session ကို စစ်ဆေးပြီး ချိတ်ဆက်နေပါသည် Chief...")
             
             try:
-                live_admins = await bot.get_participants(TARGET_CHAT_ID, filter=ChannelParticipantsAdmins)
-                live_admin_ids = [adm.id for adm in live_admins if not adm.bot]
-            except Exception as e:
-                print(f"Error fetching live admins in loop: {e}")
-                live_admin_ids = []
-
-            unactive_admins = list(survey_col.find({
-                "date": today_str,
-                "chosen_slot": current_slot,
-                "active_today": False,
-                "warn_count": {"$lt": 3}
-            }))
-            
-            to_mention_list = []
-            
-            for adm in unactive_admins:
-                if live_admin_ids and (adm["user_id"] not in live_admin_ids):
-                    continue
-                    
-                if current_time - adm.get("last_warn_time", 0) >= 2700:
-                    new_warn_count = adm.get("warn_count", 0) + 1
-                    
-                    survey_col.update_one(
-                        {"_id": adm["_id"]},
-                        {"$set": {
-                            "warn_count": new_warn_count,
-                            "last_warn_time": current_time
-                        }}
-                    )
-                    
-                    if adm.get("username"):
-                        m_str = f"@{adm['username']}"
-                    else:
-                        m_str = f"[{adm['display_name']}](tg://user?id={adm['user_id']})"
-                        
-                    to_mention_list.append(f"{m_str} ({new_warn_count}/3)")
-            
-            if to_mention_list:
-                adjacent_mentions = " ".join(to_mention_list)
-                alert_payload = (
-                    f"🚨 **GP လာရမ်း သတိပေးချက်!**\n\n"
-                    f"{adjacent_mentions}\n\n"
-                    f"မင်းတို့တွေ ဒီအချိန် ({slot_text}) အားတယ်လို့ ပြောထားပြီး Gp ထဲ ပျောက်နေတယ်! ချက်ချင်း လာရမ်းကြတော့! ⚔️"
-                )
-                await bot.send_message(TARGET_CHAT_ID, alert_payload)
+                new_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+                await new_client.start()
+                me = await new_client.get_me()
                 
-        except Exception as e:
-            print(f"❌ Alert Loop Error: {e}")
+                # Database (usertalking_col) သို့ အသစ် သိမ်းဆည်း/အပ်ဒိတ် လုပ်ခြင်း
+                await usertalking_col.update_one(
+                    {"user_id": me.id},
+                    {"$set": {"session": session_str, "username": me.username, "user_id": me.id}},
+                    upsert=True
+                )
+                
+                # Active Memory Map ထဲ ထည့်သွင်းခြင်း
+                talking_clients[me.id] = new_client
+                
+                updated_count = await usertalking_col.count_documents({})
+                await status_msg.edit(f"✅ **Account ချိတ်ဆက်မှု အောင်မြင်ပါသည် Chief!**\n👤 အကောင့်: @{me.username}\n📊 စုစုပေါင်းအကောင့်အရေအတွက်: `{updated_count}`/10 ခု ရှိသွားပါပြီ။")
+            except Exception as e:
+                await status_msg.edit(f"❌ Userbot ချိတ်ဆက်မှု ကျရှုံးပါသည်: {e}")
+
+    # 💬 CROSSTALK START COMMAND
+    elif cmd == "/စကားပြော":
+        if is_crosstalk_active:
+            await event.reply("⚠️ **စကားပြောစနစ်သည် လက်ရှိတွင် Run နေပါသည် Chief!**")
+            return
             
-        await asyncio.sleep(300)
+        if len(talking_clients) < 2:
+            await event.reply("❌ **စကားပြောရန် အနည်းဆုံး အကောင့် (၂) ခု လိုအပ်ပါသည်။**\nကျေးဇူးပြု၍ `/string` ဖြင့် အကောင့်များ အရင်ထည့်ပေးပါဗျာ Chief။")
+            return
+            
+        is_crosstalk_active = True
+        crosstalk_task = asyncio.create_task(run_crosstalk_loop())
+        await event.reply("💬 🔥 **Multi-Bot Cross-Talk စနစ်ကို စတင်လိုက်ပါပြီ Chief!**\nအကောင့်များ အချင်းချင်း အဆက်မပြတ် Reply ထောက်ပြီး စကားပြောနေပါလိမ့်မည်။")
+
+    # 🛑 CROSSTALK STOP COMMAND
+    elif cmd == "/နား":
+        if not is_crosstalk_active:
+            await event.reply("⚠️ **စကားပြောစနစ်သည် ပိတ်ထားပြီးသား ဖြစ်ပါသည် Chief!**")
+            return
+            
+        is_crosstalk_active = False
+        if crosstalk_task:
+            crosstalk_task.cancel()
+        await event.reply("🛑 **Chief ရဲ့ အမိန့်အရ စကားပြောစနစ်ကို ချက်ချင်း ရပ်တန့်လိုက်ပါပြီဗျာ။**")
 
 # ==========================================
-# 🏁 MAIN STARTUP
+# 🚀 SYSTEM STARTUP LOGIC
 # ==========================================
-async def main():
-    await bot.start(bot_token=BOT_TOKEN)
-    print("✅ Chaos Admin Survey Bot is fully live and listening!")
+async def startup():
+    global talking_clients
+    logging.info("⏳ System starting up and loading Cross-Talk Simulator Engine...")
     
-    asyncio.create_task(auto_alert_monitor_loop())
+    # Render Web Server ကို Background မှာ အရင်မောင်းထားမည်
+    asyncio.create_task(start_dummy_web_server())
+
+    # 📥 Database (usertalking) ထဲမှာ ရှိပြီးသား အကောင့်များအားလုံးကို Startup မှာ Auto-Login လုပ်ပြီး အဆင်သင့်ပြင်ခြင်း
+    logging.info("⏳ Loading Simulator Accounts from MongoDB (usertalking collection)...")
+    cursor_talkers = usertalking_col.find({})
+    async for doc in cursor_talkers:
+        try:
+            cl = TelegramClient(StringSession(doc["session"]), APP_ID, APP_HASH)
+            await cl.start()
+            talking_clients[doc["user_id"]] = cl
+            logging.info(f"✅ Successfully loaded talker account: @{doc.get('username')}")
+        except Exception as e:
+            logging.error(f"⚠️ Failed to login talker account {doc.get('username')}: {e}")
+
+    # Official Bot ကို စတင်လည်ပတ်ခြင်း
+    await bot.start(bot_token=BOT_TOKEN)
+    logging.info("🤖 Official Control Bot is running successfully...")
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
-    print("🌐 Starting Background Flask Server for Render Port Binding...")
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    
-    asyncio.run(main())
-
+    asyncio.run(startup())
