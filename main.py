@@ -1,4 +1,5 @@
 import os
+import time
 import asyncio
 import random
 import logging
@@ -20,19 +21,19 @@ BOT_TOKEN = '8111794244:AAGpkLE7h5x_IYFvjkVCbJosDC1TFbCGxcQ'
 OWNER_ID = 7693106830
 SPECIFIC_GROUP = -1003940667453
 
+
 # MongoDB Connections
 client_mongo = AsyncIOMotorClient(MONGO_URI)
 db = client_mongo["telegram_bot"]
-talk_col = db["random_talk"]     # စကားပြောစာသားရင်းမြစ် ၁
-filters_col = db["filters"]       # စကားပြောစာသားရင်းမြစ် ၂
-usertalking_col = db["usertalking"]  # 👈 စကားပြောမည့် အကောင့် (၂-၁၀) ခုအား သိမ်းဆည်းမည့် New Collection
+talk_col = db["random_talk"]         # Fallback စကားပြောစာသားရင်းမြစ်
+reply_save_col = db["reply_save_col"] # 👈 Keyword & Triggers အဓိကသိမ်းဆည်းမည့် New Collection
+usertalking_col = db["usertalking"]  # စကားပြောမည့် အကောင့်များသိမ်းဆည်းရာ Collection
 
 # Global Runtime States
-talking_clients = {}            # Live ဖြစ်နေသော Userbot Client object များကို Memory ထဲ သိမ်းဆည်းရန်
+talking_clients = {}            # Live ဖြစ်နေသော Userbot Client object များ
 is_crosstalk_active = False     # Cross-Talk စနစ် ပွင့်/ပိတ် Status
-crosstalk_task = None           # Background Loop လုပ်ဆောင်ချက်ကို ထိန်းချုပ်ရန် တာဝန်ခံ
 
-# Initialize Official Bot
+# Initialize Official Control Bot
 bot = TelegramClient('official_crosstalk_bot', APP_ID, APP_HASH)
 
 # ==========================================
@@ -56,85 +57,108 @@ async def start_dummy_web_server():
         logging.error(f"❌ Web Server Error: {e}")
 
 # ==========================================
-# 💬 BACKEND AUTOMATED CROSSTALK SIMULATOR LOOP
+# 💬 🧠 INTELLIGENT CROSSTALK ENGINE (EVENT-DRIVEN)
 # ==========================================
-async def run_crosstalk_loop():
+@bot.on(events.NewMessage(chats=SPECIFIC_GROUP))
+async def on_group_discussion(event):
     global is_crosstalk_active, talking_clients
-    logging.info("💬 Cross-talk background loop successfully activated.")
     
-    last_msg_id = None
-    
-    while is_crosstalk_active:
-        bot_count = len(talking_clients)
+    # ၁။ စနစ်ပိတ်ထားလျှင် ဘာမှမလုပ်ပါ
+    if not is_crosstalk_active:
+        return
+
+    # ၂။ စာသားမပါလျှင် ကျော်မည်
+    user_text = event.message.text.strip().lower() if event.message.text else ""
+    if not user_text:
+        return
+
+    # ၃။ Telegram Bot API (စက်ရုပ်တွေ) ပို့တဲ့စာဆိုလျှင် လျစ်လျူရှုမည်
+    sender = await event.get_sender()
+    if sender and sender.bot:
+        return
+
+    # ၄။ စကားပြောမည့် Active Userbot အနည်းဆုံး ၂ ခုရှိမှ အလုပ်လုပ်မည်
+    bot_count = len(talking_clients)
+    if bot_count < 2:
+        return
+
+    # ၅။ Active ဖြစ်နေသော အကောင့်များထဲမှ ကျပန်း တစ်ကောင့်ကို ရွေးချယ်၍ Reply ပြန်ခိုင်းမည်
+    chosen_id = random.choice(list(talking_clients.keys()))
+    client = talking_clients[chosen_id]
+
+    # အကယ်၍ လက်ရှိစာပို့လိုက်သူက ၎င်းရွေးချယ်ခံရသည့် Bot ကိုယ်တိုင်ဖြစ်နေပါက (Self-reply မဖြစ်စေရန်) အခြား Bot တစ်ခုသို့ ပြောင်းမည်
+    if sender and sender.id == chosen_id:
+        available_ids = [uid for uid in talking_clients.keys() if uid != chosen_id]
+        if available_ids:
+            chosen_id = random.choice(available_ids)
+            client = talking_clients[chosen_id]
+        else:
+            return
+
+    try:
+        reply_text = None
         
-        # အကောင့် (၂) ခုအောက် နည်းနေပါက ဆက်မပြောဘဲ စနစ်ရပ်တန့်မည်
-        if bot_count < 2:
-            await bot.send_message(SPECIFIC_GROUP, "⚠️ **Chief! စကားပြောရန် အနည်းဆုံး အကောင့် (၂) ခု လိုအပ်ပါသည်။**\nကျေးဇူးပြု၍ `/string` ဖြင့် ထပ်မံဖြည့်စွက်ပေးပါ။")
-            is_crosstalk_active = False
-            break
+        # 🔍 STEP A: Trigger Keyword အား `reply_save_col` ထဲတွင် ရှာဖွေခြင်း (Length >= 3 & Regex Match)
+        match_pipeline = [
+            {"$match": {
+                "$and": [
+                    {"$expr": {"$gte": [{"$strLenCP": "$trigger"}, 3]}},
+                    {"trigger": {"$regex": user_text, "$options": "i"}}
+                ]
+            }},
+            {"$sample": {"size": 1}}
+        ]
         
-        # Active ဖြစ်နေတဲ့ Bot ထဲက တစ်ခုကို ကျပန်း ရွေးချယ်ခိုင်းခြင်း
-        chosen_id = random.choice(list(talking_clients.keys()))
-        client = talking_clients[chosen_id]
-        
-        try:
-            # DB col ၂ ခုထဲက တစ်ခုခုကနေ ကျပန်းစာသား ဆွဲထုတ်ယူခြင်း
-            chosen_col = random.choice([talk_col, filters_col])
-            pipeline = [{"$sample": {"size": 1}}]
-            cursor = chosen_col.aggregate(pipeline)
-            docs = await cursor.to_list(length=1)
+        cursor_match = reply_save_col.aggregate(match_pipeline)
+        matched_docs = await cursor_match.to_list(length=1)
+
+        if matched_docs and matched_docs[0].get("responses"):
+            reply_text = random.choice(matched_docs[0]["responses"])
+        else:
+            # 🔍 STEP B: အကယ်၍ Keyword မကိုက်ညီပါက 20% Chance Fallback Logic ဖြင့် စာသားကျပန်းဆွဲထုတ်မည်
+            if random.random() < 0.20:  
+                pipeline_fallback = [{"$sample": {"size": 1}}]
+                cursor_fallback = reply_save_col.aggregate(pipeline_fallback)
+                random_docs = await cursor_fallback.to_list(length=1)
+                
+                if random_docs and random_docs[0].get("responses"):
+                    reply_text = random.choice(random_docs[0]["responses"])
+                else:
+                    # `reply_save_col` တွင်မရှိပါက `talk_col` မှ `text` ကို ဆွဲယူမည်
+                    cursor_talk = talk_col.aggregate(pipeline_fallback)
+                    random_talk_docs = await cursor_talk.to_list(length=1)
+                    reply_text = random_talk_docs[0].get("text") if random_talk_docs else None
+            else:
+                return
+
+        # ၆။ စာသားရရှိပါက လူအစစ်ကဲ့သို့ အချိန်ဆွဲပြီး Reply လှမ်းထောက်ပို့မည်
+        if reply_text:
+            # 🛡️ Anti-Flood & Natural Pacing Delay (စကားဝိုင်း အလွန်အမင်း မမြန်စေရန် ၄ မှ ၇ စက္ကန့်ကြား နားပေးမည်)
+            await asyncio.sleep(random.uniform(4.0, 7.0))
             
-            reply_text = "🎯"  # Default fallback text
-            if docs:
-                # Field အမျိုးအစား မတူညီမှုများကို လိုက်ညှိဖတ်ခြင်း
-                raw_text = docs[0].get("text") or docs[0].get("word") or docs[0].get("responses")
-                if isinstance(raw_text, list) and raw_text:
-                    reply_text = random.choice(raw_text)
-                elif isinstance(raw_text, str) and raw_text:
-                    reply_text = raw_text
-            
-            # Group ထဲက နောက်ဆုံး စာသား ID ကို ဆွဲထုတ်ပြီး Reply Chain စဉ်ဆက်မပြတ် ဆက်သွားစေရန်
-            if not last_msg_id:
-                async for m in client.iter_messages(SPECIFIC_GROUP, limit=1):
-                    last_msg_id = m.id
-            
-            # ⚡ Dynamic Typing Delay Tuning (လူအစစ်တွေ စာရိုက်နေသလို ပုံစံဖမ်းခြင်း)
-            # အကောင့်များလေ စကားပြောနှုန်း သွက်စေပြီး၊ အကောင့်နည်းရင် Flood မမိအောင် ပိုစောင့်ပါမည်
-            base_typing_delay = max(2.5, 7.0 / bot_count)
+            # စာရိုက်နေသည့် ပုံစံ (Typing status) ကို ပြသပေးခြင်း
             async with client.action(SPECIFIC_GROUP, 'typing'):
-                await asyncio.sleep(random.uniform(base_typing_delay, base_typing_delay + 1.2))
+                await asyncio.sleep(random.uniform(1.5, 3.0))
             
-            # စာသားကို အရှေ့က စာအပေါ် Reply ထောက်ပြီး လှမ်းပို့ခြင်း
-            sent_msg = await client.send_message(
-                SPECIFIC_GROUP,
-                reply_text,
-                reply_to=last_msg_id
-            )
-            last_msg_id = sent_msg.id  # နောက်ထပ် Bot က Reply ပြန်ထောက်နိုင်ရန် ID ကို Update လုပ်ခြင်း
-            
-        except errors.rpcerrorlist.FloodWaitError as e:
-            logging.warning(f"⚠️ FloodWait Error Caught! Sleeping for {e.seconds} seconds.")
-            await asyncio.sleep(e.seconds)
-        except Exception as e:
-            logging.error(f"❌ Crosstalk Interaction Error: {e}")
-            last_msg_id = None  # Loop မပြတ်သွားစေရန် ID ကို reset လုပ်ပြီး ပြန်ချိတ်ခိုင်းခြင်း
-            await asyncio.sleep(3)
-            
-        # 🛡️ Anti-Flood Global Cooldown Calculation (Telegram Group Spam filter ကျော်ရန်)
-        # အကောင့် ၁၀ ခုအထိ အများဆုံးရှိရင် ၃ စက္ကန့်ကျော်စီနားပြီး၊ အကောင့် ၂ ခုပဲရှိရင် ၅ စက္ကန့်ကျော်စီ နားပေးပါမည်
-        global_cooldown = max(3.0, random.uniform(4.5, 7.0) - (bot_count * 0.35))
-        await asyncio.sleep(global_cooldown)
+            # ရွေးချယ်ခံရသည့် Userbot အကောင့်မှ စာကို တိုက်ရိုက် Reply ပြန်ထောက်၍ ပို့လိုက်ခြင်း
+            await client.send_message(SPECIFIC_GROUP, reply_text, reply_to=event.id)
+
+    except errors.rpcerrorlist.FloodWaitError as e:
+        logging.warning(f"⚠️ FloodWait မိသွားပါပြီ။ {e.seconds} စက္ကန့် စောင့်ဆိုင်းနေပါသည်...")
+        await asyncio.sleep(e.seconds)
+    except Exception as e:
+        logging.error(f"❌ Auto-Reply Cross-Talk Error: {e}")
 
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
 # ==========================================
 @bot.on(events.NewMessage(chats=SPECIFIC_GROUP, from_users=OWNER_ID))
 async def handle_admin_commands(event):
-    global talking_clients, is_crosstalk_active, crosstalk_task
+    global talking_clients, is_crosstalk_active
     
     cmd = event.message.text.strip() if event.message.text else ""
 
-    # 📥 MULTI-BOT /string MANAGEMENT (အနည်းဆုံး ၂ ခုမှ အများဆုံး ၁၀ ခုအထိ သိမ်းဆည်းရန်)
+    # 📥 MULTI-BOT /string MANAGEMENT
     if cmd == "/string" and event.is_reply:
         reply_msg = await event.get_reply_message()
         if reply_msg and reply_msg.text:
@@ -152,16 +176,13 @@ async def handle_admin_commands(event):
                 await new_client.start()
                 me = await new_client.get_me()
                 
-                # Database (usertalking_col) သို့ အသစ် သိမ်းဆည်း/အပ်ဒိတ် လုပ်ခြင်း
                 await usertalking_col.update_one(
                     {"user_id": me.id},
                     {"$set": {"session": session_str, "username": me.username, "user_id": me.id}},
                     upsert=True
                 )
                 
-                # Active Memory Map ထဲ ထည့်သွင်းခြင်း
                 talking_clients[me.id] = new_client
-                
                 updated_count = await usertalking_col.count_documents({})
                 await status_msg.edit(f"✅ **Account ချိတ်ဆက်မှု အောင်မြင်ပါသည် Chief!**\n👤 အကောင့်: @{me.username}\n📊 စုစုပေါင်းအကောင့်အရေအတွက်: `{updated_count}`/10 ခု ရှိသွားပါပြီ။")
             except Exception as e:
@@ -170,7 +191,7 @@ async def handle_admin_commands(event):
     # 💬 CROSSTALK START COMMAND
     elif cmd == "/စကားပြော":
         if is_crosstalk_active:
-            await event.reply("⚠️ **စကားပြောစနစ်သည် လက်ရှိတွင် Run နေပါသည် Chief!**")
+            await event.reply("⚠️ **စကားပြောစနစ်သည် လက်ရှိတွင် Active ဖြစ်နေပါသည် Chief!**")
             return
             
         if len(talking_clients) < 2:
@@ -178,8 +199,18 @@ async def handle_admin_commands(event):
             return
             
         is_crosstalk_active = True
-        crosstalk_task = asyncio.create_task(run_crosstalk_loop())
-        await event.reply("💬 🔥 **Multi-Bot Cross-Talk စနစ်ကို စတင်လိုက်ပါပြီ Chief!**\nအကောင့်များ အချင်းချင်း အဆက်မပြတ် Reply ထောက်ပြီး စကားပြောနေပါလိမ့်မည်။")
+        await event.reply("💬 🔥 **Multi-Bot Intelligent Cross-Talk စနစ်ကို စတင်လိုက်ပါပြီ Chief!**\nယခုမှစ၍ အကောင့်များအချင်းချင်း Keyword အလိုက် အဆက်မပြတ် Reply ထောက်ပြီး စကားပြောပါတော့မည်။")
+        
+        # 🚀 စကားဝိုင်း အစပျိုး (Seed) ဖြစ်စေရန် Bot တစ်ခုဆီမှ ပထမဆုံးစာသားအား ကျပန်း စတင်ပို့ခိုင်းလိုက်ခြင်း
+        try:
+            chosen_id = random.choice(list(talking_clients.keys()))
+            client = talking_clients[chosen_id]
+            cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
+            random_talk_docs = await cursor_talk.to_list(length=1)
+            seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
+            await client.send_message(SPECIFIC_GROUP, seed_text)
+        except Exception as e:
+            logging.error(f"❌ Failed to send starter seed message: {e}")
 
     # 🛑 CROSSTALK STOP COMMAND
     elif cmd == "/နား":
@@ -188,9 +219,7 @@ async def handle_admin_commands(event):
             return
             
         is_crosstalk_active = False
-        if crosstalk_task:
-            crosstalk_task.cancel()
-        await event.reply("🛑 **Chief ရဲ့ အမိန့်အရ စကားပြောစနစ်ကို ချက်ချင်း ရပ်တန့်လိုက်ပါပြီဗျာ။**")
+        await event.reply("🛑 **Chief ရဲ့ အမိန့်အရ စကားပြောစနစ် (Keyword Simulation) ကို ချက်ချင်း ရပ်တန့်လိုက်ပါပြီဗျာ။**")
 
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
@@ -199,10 +228,10 @@ async def startup():
     global talking_clients
     logging.info("⏳ System starting up and loading Cross-Talk Simulator Engine...")
     
-    # Render Web Server ကို Background မှာ အရင်မောင်းထားမည်
+    # Render Web Server ကို Background မှာ မောင်းနှင်မည်
     asyncio.create_task(start_dummy_web_server())
 
-    # 📥 Database (usertalking) ထဲမှာ ရှိပြီးသား အကောင့်များအားလုံးကို Startup မှာ Auto-Login လုပ်ပြီး အဆင်သင့်ပြင်ခြင်း
+    # Database ထဲမှ အကောင့်များအားလုံးကို Startup တွင် Auto-Login ပြုလုပ်ခြင်း
     logging.info("⏳ Loading Simulator Accounts from MongoDB (usertalking collection)...")
     cursor_talkers = usertalking_col.find({})
     async for doc in cursor_talkers:
@@ -221,3 +250,4 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
+
