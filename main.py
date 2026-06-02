@@ -74,15 +74,22 @@ async def on_userbot_message(event):
         return
 
     # Owner ဆီကစာ သို့မဟုတ် Active ဖြစ်နေတဲ့ Userbot အချင်းချင်းဆီကစာ ဖြစ်မှ အလုပ်လုပ်မည်
+        # (အပေါ်က Code များအတိုင်း...)
     is_owner = (event.sender_id == OWNER_ID)
     is_userbot = (event.sender_id in talking_clients)
     
     if not (is_owner or is_userbot):
         return
 
+    # 🔥 ပြင်ဆင်ရန်အချက်- Userbot အချင်းချင်း စကားပြောတာဆိုရင် စပန်းတာ သက်သာအောင် 40% သို့မဟုတ် 50% ပဲ စာပြန်ခွင့်ပေးမယ်
+    if is_userbot:
+        if random.random() > 0.40: # 40% ပဲ စာပြန်မယ်၊ 60% ကတော့ ကျော်သွားမယ်
+            return
+
     if last_processed_msg_id == event.id:
         return
     last_processed_msg_id = event.id
+    # (အောက်က Code များအတိုင်း ဆက်ရေးရန်...)
 
     user_text = event.message.text.strip().lower() if event.message.text else ""
     if not user_text:
@@ -105,7 +112,7 @@ async def on_userbot_message(event):
 
     try:
         reply_text = None
-        should_reply = random.random() < 0.90
+        should_reply = random.random() < 0.60
         
         if should_reply:
             match_pipeline = [
