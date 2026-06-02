@@ -1,4 +1,4 @@
-telethon
+telethon==1.35.0
+pytgcalls==3.0.0.dev24
 motor
-pymongo
-pytgcalls
+cryptography==42.0.5
