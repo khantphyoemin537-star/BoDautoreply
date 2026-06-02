@@ -10,7 +10,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.utils import get_peer_id
-from telethon.tl.types import UpdateGroupCall  # VC Update ဖမ်းရန်
+from telethon.tl.functions.phone import JoinGroupCallRequest
+from telethon.tl.types import InputGroupCall # VC Update ဖမ်းရန်
 
 # PyTgCalls Libraries
 from pytgcalls import PyTgCalls
@@ -72,33 +73,24 @@ async def start_dummy_web_server():
 # 🎙️ 24/7 VOICE CHAT JOINER ENGINE
 # ==========================================
 async def join_voice_chat(client_id, client, chat_id):
-    """ Userbot တစ်ခုချင်းစီကို VC ထဲ ဝင်ခိုင်းပြီး Silent Stream ဖြင့် 24/7 တည်ရှိနေစေမည့် Function """
+    """ PyTgCalls မလိုဘဲ Telethon ရဲ့ Native စနစ်ဖြင့် VC ထဲ ဝင်ထိုင်နေမည့် စနစ် """
     try:
-        # လက်ရှိ account အတွက် TgCalls run နေတာရှိပြီးသားဆိုရင် အရင်ရပ်မယ်
-        if client_id in pytgcalls_clients:
-            try:
-                await pytgcalls_clients[client_id].leave_call(chat_id)
-            except:
-                pass
-
-        call_client = PyTgCalls(client)
-        await call_client.start()
-        pytgcalls_clients[client_id] = call_client
-
-        # Userbot တွေ ပြုတ်မထွက်ဘဲ ငြိမ်ထိုင်နေဖို့ အသံတိတ် (Silence) ဖိုင်ကို အနောက်မှာ Stream ထားပေးခြင်း
-        silent_stream = "https://github.com/anars/blank-audio/raw/master/10-seconds-of-silence.mp3"
-
-        await call_client.join_call(
-            chat_id,
-            StreamAudio(
-                silent_stream,
-                AudioQuality.LOW
+        # Group Entity မှတစ်ဆင့် Voice Call အချက်အလက်ကို ဆွဲထုတ်ခြင်း
+        full_chat = await client.get_peer_info(chat_id)
+        if hasattr(full_chat, 'full_chat') and full_chat.full_chat.call:
+            input_call = InputGroupCall(
+                id=full_chat.full_chat.call.id,
+                access_hash=full_chat.full_chat.call.access_hash
             )
-        )
-        logging.info(f"🎙️ Userbot {client_id} successfully joined Voice Chat in {chat_id}")
+            # VC ထဲသို့ Join ခြင်း (Muted အနေဖြင့် အသံတိတ် ဝင်ထိုင်နေမည်)
+            await client(JoinGroupCallRequest(
+                call=input_call,
+                join_as=await client.get_input_entity('me'),
+                muted=True
+            ))
+            logging.info(f"🎙️ Userbot {client_id} joined VC via Telethon Native Native!")
     except Exception as e:
-        logging.error(f"❌ Userbot {client_id} failed to join Voice Chat: {e}")
-
+        logging.error(f"❌ Telethon VC Join Error: {e}")
 # ==========================================
 # 🔄 AUTOMATIC VC EVENT DETECTOR (RAW EVENT)
 # ==========================================
