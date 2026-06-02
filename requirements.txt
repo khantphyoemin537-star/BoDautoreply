@@ -1,5 +1,3 @@
-Telethon
-requests
+telethon
+motor
 pymongo
-dnspython
-flask
