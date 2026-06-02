@@ -1,4 +1,4 @@
-telethon>=1.24.0,<1.36.0
-pytgcalls==3.0.0.dev24
+telethon
+pytgcalls
 motor
 cryptography
