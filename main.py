@@ -13,11 +13,6 @@ from telethon.utils import get_peer_id
 from telethon.tl.functions.phone import JoinGroupCallRequest
 from telethon.tl.types import InputGroupCall # VC Update ဖမ်းရန်
 
-# PyTgCalls Libraries
-from pytgcalls import PyTgCalls
-from pytgcalls.types import AudioQuality
-from pytgcalls.types.stream import StreamAudio
-
 # Setup basic logging to see bot activity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
