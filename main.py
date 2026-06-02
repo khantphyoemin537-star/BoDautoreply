@@ -72,7 +72,6 @@ async def on_userbot_message(event):
     if event.chat_id != TARGET_GROUP:
         return
 
-    # ⚠️ String Session ထဲက Useraccount အချင်းချင်းပို့သော စာဖြစ်မှသာ ဆက်လုပ်မည်
     if event.sender_id not in talking_clients:
         return
 
@@ -96,14 +95,13 @@ async def on_userbot_message(event):
 
     try:
         reply_text = None
-        # 🎲 90% Reply ပြန်မည် ၊ 10% အလွတ်ဝင်ပြောမည်
         should_reply = random.random() < 0.90
         
         if should_reply:
             match_pipeline = [
                 {"$match": {
                     "$and": [
-                        {"$expr": {"$expr": {"$gte": [{"$strLenCP": "$trigger"}, 3]}}},
+                        {"$expr": {"$gte": [{"$strLenCP": "$trigger"}, 3]}},
                         {"trigger": {"$regex": user_text, "$options": "i"}}
                     ]
                 }},
@@ -143,16 +141,13 @@ async def on_userbot_message(event):
             except Exception:
                 reply_text = None
 
-        # 🛡️ [FIXED] Database Fallback Break: DB ထဲတွင် စာလုံးဝမရှိပါက စကားဝိုင်းရပ်မသွားစေရန် ကျပန်းစာသား ထည့်ပေးခြင်း
         if not reply_text:
             default_phrases = ["ဟုတ်ပဗျာ", "အေးပါဗျာ", "ဒါနဲ့လေ...", "ဟီးဟီး", "မဆိုးပါဘူး", "ဟုတ်လား Chief", "အော်... အင်း"]
             reply_text = random.choice(default_phrases)
 
         if reply_text:
-            # Cooldown (၂.၅ မှ ၃.၅ စက္ကန့်) -> ပျှမ်းမျှ ၃ စက္ကန့်
             await asyncio.sleep(random.uniform(2.5, 3.5))
             
-            # Typing Status (၁.၁ မှ ၂.၅ စက္ကန့်) -> ပျှမ်းမျှ ၂ စက္ကန့်
             async with client.action(TARGET_GROUP, 'typing'):
                 await asyncio.sleep(random.uniform(1.1, 2.5))
             
@@ -207,90 +202,6 @@ async def handle_admin_commands(event):
             except Exception as e:
                 await status_msg.edit(f"❌ Userbot ချိတ်ဆက်မှု ကျရှုံးပါသည်: {e}")
 
-    # 🎯 GROUP ပြောင်းရွှေ့ပြီး ဝင်ရောက်ခြင်း (JOIN) စနစ်
-    @bot.on(events.NewMessage(pattern='/သွားမယ်'))
-async def go_to_group(event):
-    global TARGET_GROUP
-    
-    # ရိုက်ထည့်လိုက်တဲ့ စာသားထဲက link ကို ယူမယ်
-    text_parts = event.text.split(maxsplit=1)
-    if len(text_parts) < 2:
-        await event.respond("❌ ကျေးဇူးပြု၍ Group Link သို့မဟုတ် Username ထည့်ပေးပါ။\nဥပမာ - `/သွားမယ် https://t.me/example`")
-        return
-        
-    argument = text_parts[1].strip()
-    await event.respond("🔄 Group Link ကို စစ်ဆေးပြီး Bot များ ဝင်ရောက်နေပါသည်...")
-    
-    if not talking_clients:
-        await event.respond("❌ အလုပ်လုပ်မယ့် Client Account မရှိသေးပါ။")
-        return
-
-    # ပထမဆုံး client ကို သုံးပြီး group ရဲ့ ID ကို ဖော်ထုတ်မယ်
-    first_cl = list(talking_clients.values())[0]
-    resolved_id = None
-
-    try:
-        # 1. Private Invite Link ဖြစ်ခဲ့ရင် (t.me/+... သို့မဟုတ် joinchat/)
-        if "joinchat/" in argument or "t.me/+" in argument:
-            invite_hash = argument.split("joinchat/")[-1] if "joinchat/" in argument else argument.split("t.me/+")[-1]
-            
-            # အကောင့်က Group ထဲ ရောက်နှင့်ပြီးသားလား အရင်စစ်မယ် (await ပါရမယ်)
-            try:
-                invite_info = await first_cl(CheckChatInviteRequest(invite_hash))
-                if hasattr(invite_info, 'chat') and invite_info.chat:
-                    resolved_id = first_cl.get_peer_id(invite_info.chat)
-            except Exception:
-                pass
-
-            # Bot အားလုံးကို Group ထဲ ဝင်ခိုင်းမယ်
-            for cl_id, cl in talking_clients.items():
-                try:
-                    # cl(...) ကို await လုပ်ပြီး Join ခိုင်းတာ ဖြစ်ပါတယ်
-                    updates = await cl(ImportChatInviteRequest(invite_hash))
-                    # လတ်တလော Join လိုက်တဲ့ update ထဲကနေ ID ယူမယ်
-                    if hasattr(updates, 'chats') and updates.chats and not resolved_id:
-                        resolved_id = cl.get_peer_id(updates.chats[0])
-                except errors.UserAlreadyParticipantError:
-                    # အထဲရောက်နှင့်ပြီးသားမို့ Error တက်ရင် ကျော်သွားမယ်
-                    pass
-                except Exception:
-                    pass
-
-        # 2. Public Link သို့မဟုတ် Username ဖြစ်ခဲ့ရင် (@username)
-        else:
-            username = argument.replace("https://t.me/", "").replace("@", "").split('/')[0]
-            # ⚠️ ဒီနေရာမှာ await ပါဝင်ဖို့ အထူးအရေးကြီးပါတယ်!
-            entity = await first_cl.get_entity(username)
-            resolved_id = first_cl.get_peer_id(entity)
-
-        # TARGET_GROUP ထဲကို သေချာပေါက် Integer ID ရောက်အောင် ထည့်သွင်းခြင်း
-        if resolved_id:
-            TARGET_GROUP = resolved_id
-            await event.respond(f"✅ TARGET_GROUP သတ်မှတ်ပြီးပါပြီ။ (Group ID: {TARGET_GROUP})")
-        else:
-            raise Exception("Group ID ကို ရှာမတွေ့ပါ။ Link မှန်မမှန် ပြန်စစ်ပေးပါ။")
-
-    except Exception as e:
-        await event.respond(f"❌ Link ဖတ်ရတာ မအောင်မြင်ပါ- {e}")
-        return
-
-    # 3. Seed Message ပို့တဲ့အပိုင်း (အဆင်ပြေအောင် 3 စက္ကန့် စောင့်ပြီးမှ ပို့မယ်)
-    try:
-        await asyncio.sleep(3.0)
-        chosen_id = random.choice(list(talking_clients.keys()))
-        client = talking_clients[chosen_id]
-        
-        # MongoDB ကနေ စာသား Random နှိုက်ယူခြင်း
-        cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
-        random_talk_docs = await cursor_talk.to_list(length=1)
-        seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
-        
-        # ⚠️ TARGET_GROUP က Integer စစ်စစ်ဖြစ်သွားပြီမို့ လုံးဝ Error မတက်ဘဲ ပို့ပေးမှာပါ
-        await client.send_message(TARGET_GROUP, seed_text)
-        await event.respond("🚀 စကားစတင်ရန် Seed Message ကို အောင်မြင်စွာ ပို့ပြီးပါပြီ။")
-        
-    except Exception as e:
-        await event.respond(f"❌ စကားစတင်ရန် Seed Message ပို့ခြင်း ကျရှုံးပါသည်- {e}")
     # 💬 CROSSTALK START COMMAND
     elif cmd == "/စကားပြော":
         if not talking_clients:
@@ -320,6 +231,95 @@ async def go_to_group(event):
         is_crosstalk_active = False
         await event.reply("🛑 **Chief ရဲ့ အမိန့်အရ စကားပြောစနစ်ကို ချက်ချင်း ရပ်တန့်လိုက်ပါပြီဗျာ။**")
 
+
+# 🎯 [STANDALONE COMMAND] /သွားမယ် စနစ်အသစ် (ခွဲထုတ်ပြီးသားအပိုင်း)
+@bot.on(events.NewMessage(from_users=OWNER_ID, pattern=r'^/သွားမယ်'))
+async def go_to_group(event):
+    global TARGET_GROUP, is_crosstalk_active
+    
+    text_parts = event.text.split(maxsplit=1)
+    if len(text_parts) < 2:
+        await event.respond("❌ ကျေးဇူးပြု၍ Group Link သို့မဟုတ် Username ထည့်ပေးပါ။\nဥပမာ - `/သွားမယ် https://t.me/example`")
+        return
+        
+    argument = text_parts[1].strip()
+    status_msg = await event.respond("🔄 Group Link ကို စစ်ဆေးပြီး Bot များ ဝင်ရောက်နေပါသည်...")
+    
+    if not talking_clients:
+        await status_msg.edit("❌ အလုပ်လုပ်မယ့် Client Account မရှိသေးပါ။")
+        return
+
+    first_cl = list(talking_clients.values())[0]
+    resolved_id = None
+
+    try:
+        # 1. Private Invite Link ဖြစ်ခဲ့ရင် (t.me/+... သို့မဟုတ် joinchat/)
+        if "joinchat/" in argument or "t.me/+" in argument:
+            invite_hash = argument.split("joinchat/")[-1] if "joinchat/" in argument else argument.split("t.me/+")[-1]
+            
+            try:
+                invite_info = await first_cl(CheckChatInviteRequest(invite_hash))
+                if hasattr(invite_info, 'chat') and invite_info.chat:
+                    resolved_id = first_cl.get_peer_id(invite_info.chat)
+            except Exception:
+                pass
+
+            joined_count = 0
+            for cl_id, cl in talking_clients.items():
+                try:
+                    await cl(ImportChatInviteRequest(invite_hash))
+                    joined_count += 1
+                except errors.UserAlreadyParticipantError:
+                    joined_count += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(1.5)
+
+        # 2. Public Link သို့မဟုတ် Username ဖြစ်ခဲ့ရင် (@username)
+        else:
+            username = argument.replace("https://t.me/", "").replace("@", "").split('/')[0]
+            entity = await first_cl.get_entity(username)
+            resolved_id = first_cl.get_peer_id(entity)
+            
+            joined_count = 0
+            for cl_id, cl in talking_clients.items():
+                try:
+                    await cl(JoinChannelRequest(username))
+                    joined_count += 1
+                except errors.UserAlreadyParticipantError:
+                    joined_count += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(1.5)
+
+        if resolved_id:
+            TARGET_GROUP = resolved_id
+            is_crosstalk_active = True  
+            await status_msg.edit(f"✅ **Join ခြင်း အောင်မြင်ပါသည် Chief!**\n📊 အကောင့်ပေါင်း `{joined_count}` ခု ဝင်ရောက်ပြီးပါပြီ။\n🎯 Target ID: `{TARGET_GROUP}`\n⏳ စကားဝိုင်း အလိုအလျောက် စတင်ရန် Seed Message ပို့နေပါသည်...")
+        else:
+            raise Exception("Group ID ကို ရှာမတွေ့ပါ။ Link မှန်မမှန် ပြန်စစ်ပေးပါ။")
+
+    except Exception as e:
+        await status_msg.edit(f"❌ Link ဖတ်ရတာ မအောင်မြင်ပါ- {e}")
+        return
+
+    # 3. Seed Message ပို့ခြင်း
+    try:
+        await asyncio.sleep(3.0)
+        chosen_id = random.choice(list(talking_clients.keys()))
+        client = talking_clients[chosen_id]
+        
+        cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
+        random_talk_docs = await cursor_talk.to_list(length=1)
+        seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
+        
+        await client.send_message(TARGET_GROUP, seed_text)
+        await bot.send_message(OWNER_ID, "💬 🔥 **Seed Message အောင်မြင်စွာ ပို့ပြီးပါပြီ။ စကားဝိုင်း အရှိန်ပြင်းပြင်းဖြင့် လည်ပတ်နေပါပြီ Chief!**")
+        
+    except Exception as e:
+        await bot.send_message(OWNER_ID, f"❌ စကားစတင်ရန် Seed Message ပို့ခြင်း ကျရှုံးပါသည်- {e}")
+
+
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
 # ==========================================
@@ -347,4 +347,3 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
-
