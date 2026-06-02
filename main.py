@@ -376,7 +376,7 @@ async def startup():
 
     logging.info("⏳ Loading Simulator Accounts from MongoDB...")
     cursor_talkers = usertalking_col.find({})
-    async Gear = []
+    
     async for doc in cursor_talkers:
         try:
             cl = TelegramClient(StringSession(doc["session"]), APP_ID, APP_HASH)
