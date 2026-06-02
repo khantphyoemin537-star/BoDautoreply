@@ -9,7 +9,13 @@ from telethon.sessions import StringSession
 from motor.motor_asyncio import AsyncIOMotorClient
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.utils import get_peer_id  # ပြဿနာကင်းဝေးအောင် အသုံးပြုရန် Import လုပ်ထားသည်
+from telethon.utils import get_peer_id
+from telethon.tl.types import UpdateGroupCall  # VC Update ဖမ်းရန်
+
+# PyTgCalls Libraries
+from pytgcalls import PyTgCalls
+from pytgcalls.types import AudioQuality
+from pytgcalls.types.stream import StreamAudio
 
 # Setup basic logging to see bot activity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,7 +39,8 @@ reply_save_col = db["reply_save_col"]
 usertalking_col = db["usertalking"]  
 
 # Global Runtime States
-talking_clients = {}            
+talking_clients = {}            # Telethon Clients
+pytgcalls_clients = {}          # PyTgCalls Clients (For VC Management)
 is_crosstalk_active = False     
 last_processed_msg_id = None  
 current_speed = 2  # Default Speed: 2 (Normal), 1 = Slow, 3 = Fast
@@ -62,6 +69,55 @@ async def start_dummy_web_server():
         logging.error(f"❌ Web Server Error: {e}")
 
 # ==========================================
+# 🎙️ 24/7 VOICE CHAT JOINER ENGINE
+# ==========================================
+async def join_voice_chat(client_id, client, chat_id):
+    """ Userbot တစ်ခုချင်းစီကို VC ထဲ ဝင်ခိုင်းပြီး Silent Stream ဖြင့် 24/7 တည်ရှိနေစေမည့် Function """
+    try:
+        # လက်ရှိ account အတွက် TgCalls run နေတာရှိပြီးသားဆိုရင် အရင်ရပ်မယ်
+        if client_id in pytgcalls_clients:
+            try:
+                await pytgcalls_clients[client_id].leave_call(chat_id)
+            except:
+                pass
+
+        call_client = PyTgCalls(client)
+        await call_client.start()
+        pytgcalls_clients[client_id] = call_client
+
+        # Userbot တွေ ပြုတ်မထွက်ဘဲ ငြိမ်ထိုင်နေဖို့ အသံတိတ် (Silence) ဖိုင်ကို အနောက်မှာ Stream ထားပေးခြင်း
+        silent_stream = "https://github.com/anars/blank-audio/raw/master/10-seconds-of-silence.mp3"
+
+        await call_client.join_call(
+            chat_id,
+            StreamAudio(
+                silent_stream,
+                AudioQuality.LOW
+            )
+        )
+        logging.info(f"🎙️ Userbot {client_id} successfully joined Voice Chat in {chat_id}")
+    except Exception as e:
+        logging.error(f"❌ Userbot {client_id} failed to join Voice Chat: {e}")
+
+# ==========================================
+# 🔄 AUTOMATIC VC EVENT DETECTOR (RAW EVENT)
+# ==========================================
+@bot.on(events.Raw())
+async def handle_voice_chat_updates(event):
+    """ Target Group ထဲမှာ Admin က VC ဖွင့်လိုက်တာနဲ့ Userbot တွေ အလိုလို တက်မည့်စနစ် """
+    global TARGET_GROUP, talking_clients
+    
+    if isinstance(event, UpdateGroupCall):
+        # Target Group ရဲ့ VC ပွင့်လာပြီး ပိတ်လိုက်တာ (discarded) မဟုတ်မှ အလုပ်လုပ်မည်
+        if event.chat_id == TARGET_GROUP and not event.call.discarded:
+            logging.info("🚨 Voice Chat detected in Target Group! Connecting userbots...")
+            
+            # Rate limit မမိစေရန် ၁ စက္ကန့်စီခြားပြီး Userbot များကို VC ထဲ သို့ ပို့ခြင်း
+            for cl_id, cl in talking_clients.items():
+                asyncio.create_task(join_voice_chat(cl_id, cl, TARGET_GROUP))
+                await asyncio.sleep(1.0)
+
+# ==========================================
 # 💬 🧠 FAST CROSSTALK ENGINE (USERBOT HANDLER)
 # ==========================================
 async def on_userbot_message(event):
@@ -73,33 +129,28 @@ async def on_userbot_message(event):
     if event.chat_id != TARGET_GROUP:
         return
 
-    # Owner ဆီကစာ သို့မဟုတ် Active ဖြစ်နေတဲ့ Userbot အချင်းချင်းဆီကစာ ဖြစ်မှ အလုပ်လုပ်မည်
-        # (အပေါ်က Code များအတိုင်း...)
     is_owner = (event.sender_id == OWNER_ID)
     is_userbot = (event.sender_id in talking_clients)
     
     if not (is_owner or is_userbot):
         return
 
-    # 🔥 ပြင်ဆင်ရန်အချက်- Userbot အချင်းချင်း စကားပြောတာဆိုရင် စပန်းတာ သက်သာအောင် 40% သို့မဟုတ် 50% ပဲ စာပြန်ခွင့်ပေးမယ်
+    # Userbot အချင်းချင်း စကားပြန်ပြောတာဆိုရင် Loop ပတ်ပြီး စပန်းတာ သက်သာအောင် 40% ပဲ စာပြန်ခွင့်ပေးမည်
     if is_userbot:
-        if random.random() > 0.40: # 40% ပဲ စာပြန်မယ်၊ 60% ကတော့ ကျော်သွားမယ်
+        if random.random() > 0.40:
             return
 
     if last_processed_msg_id == event.id:
         return
     last_processed_msg_id = event.id
-    # (အောက်က Code များအတိုင်း ဆက်ရေးရန်...)
 
     user_text = event.message.text.strip().lower() if event.message.text else ""
     if not user_text:
         return
 
-    # Admin command/speed command တွေကို စကားပြောထဲမထည့်ရန် ကျော်ပစ်မည်
     if user_text.startswith('.') or user_text.startswith('/'):
         return
 
-    # စာပြန်မယ့် အကောင့်ထဲကနေ လက်ရှိစာပို့လိုက်တဲ့အကောင့်ကို ဖယ်ထုတ်ပြီး ကျန်တဲ့ကောင်တွေထဲက ရွေးမည်
     available_ids = [uid for uid in talking_clients.keys() if uid != event.sender_id]
     if not available_ids:
         available_ids = list(talking_clients.keys())
@@ -163,7 +214,6 @@ async def on_userbot_message(event):
             reply_text = random.choice(default_phrases)
 
         if reply_text:
-            # ⚙️ Speed Level အလိုက် အချိန်စောင့်ဆိုင်းမှုကို တွက်ချက်ခြင်း
             if current_speed == 1:    # Slow
                 initial_delay = random.uniform(4.0, 6.5)
                 typing_delay = random.uniform(3.0, 5.0)
@@ -176,7 +226,6 @@ async def on_userbot_message(event):
 
             await asyncio.sleep(initial_delay)
             
-            # Peer Casting Bug မတက်စေရန် စာမပို့မီ Chat Entity ကို သေချာဆွဲထုတ်ပြီးမှ ပို့မည်
             chat_entity = await client.get_entity(TARGET_GROUP)
             
             async with client.action(chat_entity, 'typing'):
@@ -202,7 +251,7 @@ async def handle_admin_commands(event):
     
     cmd = event.message.text.strip() if event.message.text else ""
 
-    # ⚡ SPEED CONTROL COMMANDS (.spd 1, .spd 2, .spd 3)
+    # ⚡ SPEED CONTROL COMMANDS
     if cmd in [".spd 1", "spd 1"]:
         current_speed = 1
         await event.reply("⚡ **Crosstalk Speed ကို Slow (နှေးကွေးသောနှုန်း) သို့ ပြောင်းလဲလိုက်ပါပြီ Chief!**")
@@ -214,6 +263,28 @@ async def handle_admin_commands(event):
     elif cmd in [".spd 3", "spd 3"]:
         current_speed = 3
         await event.reply("⚡ **Crosstalk Speed ကို Fast (အမြန်နှုန်း) သို့ ပြောင်းလဲလိုက်ပါပြီ Chief!**")
+        return
+
+    # 🎙️ VOICE CHAT CONTROLS (.vcon / .vcoff)
+    elif cmd in [".vcon", "vcon"]:
+        if not talking_clients:
+            await event.reply("❌ **Chief! Active ဖြစ်နေတဲ့ Userbot မရှိသေးပါဘူးဗျာ။**")
+            return
+        status_msg = await event.reply("⏳ **Userbot အားလုံးကို Voice Chat ထဲ ပို့နေပါသည် Chief...**")
+        for cl_id, cl in talking_clients.items():
+            asyncio.create_task(join_voice_chat(cl_id, cl, TARGET_GROUP))
+            await asyncio.sleep(1.0)
+        await status_msg.edit(f"✅ **Userbot အားလုံးကို Target ID: `{TARGET_GROUP}` ရဲ့ Voice Chat ထဲ ထည့်သွင်းပြီးပါပြီ Chief!**")
+        return
+
+    elif cmd in [".vcoff", "vcoff"]:
+        status_msg = await event.reply("⏳ **Userbot များကို Voice Chat ထဲမှ ပြန်ထုတ်နေပါသည်...**")
+        for cl_id, call_cl in list(pytgcalls_clients.items()):
+            try:
+                await call_cl.leave_call(TARGET_GROUP)
+            except:
+                pass
+        await status_msg.edit("🛑 **Userbot အားလုံး Voice Chat ထဲမှ ထွက်လိုက်ပါပြီ Chief!**")
         return
 
     # 📥 MULTI-BOT /string MANAGEMENT
@@ -254,7 +325,7 @@ async def handle_admin_commands(event):
             return
             
         is_crosstalk_active = True
-        await event.reply(f"💬 🔥 **Multi-Bot Perpetual Cross-Talk စနစ်ကို ID: `{TARGET_GROUP}` တွင် အမြန်နှုန်းဖြင့် အသစ်ပြန်လည် စတင်လိုက်ပါပြီ Chief!**")
+        await event.reply(f"💬 🔥 **Multi-Bot Perpetual Cross-Talk စနစ်ကို ID: `{TARGET_GROUP}` တွင် စတင်လိုက်ပါပြီ Chief!**")
         
         try:
             chosen_id = random.choice(list(talking_clients.keys()))
@@ -263,12 +334,10 @@ async def handle_admin_commands(event):
             random_talk_docs = await cursor_talk.to_list(length=1)
             seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
             
-            # Peer casting error ကိုဖြေရှင်းရန် get_entity ကို သုံးထားပါသည်
             chat_entity = await client.get_entity(TARGET_GROUP)
             await client.send_message(chat_entity, seed_text)
         except Exception as e:
             logging.error(f"❌ Failed to send starter seed message: {e}")
-            await event.reply(f"❌ **စကားစတင်ရန် Seed Message ပို့ခြင်း ကျရှုံးပါသည်- {e}**")
 
     # 🛑 CROSSTALK STOP COMMAND
     elif cmd == "/နား":
@@ -301,7 +370,6 @@ async def go_to_group(event):
     resolved_id = None
 
     try:
-        # 1. Private Invite Link ဖြစ်ခဲ့ရင် (t.me/+... သို့မဟုတ် joinchat/)
         if "joinchat/" in argument or "t.me/+" in argument:
             invite_hash = argument.split("joinchat/")[-1] if "joinchat/" in argument else argument.split("t.me/+")[-1]
             
@@ -325,7 +393,6 @@ async def go_to_group(event):
                     pass
                 await asyncio.sleep(1.5)
 
-        # 2. Public Link သို့မဟုတ် Username ဖြစ်ခဲ့ရင် (@username)
         else:
             username = argument.replace("https://t.me/", "").replace("@", "").split('/')[0]
             entity = await first_cl.get_entity(username)
@@ -353,7 +420,6 @@ async def go_to_group(event):
         await status_msg.edit(f"❌ Link ဖတ်ရတာ မအောင်မြင်ပါ- {e}")
         return
 
-    # 3. Seed Message ပို့ခြင်း
     try:
         await asyncio.sleep(3.0)
         chosen_id = random.choice(list(talking_clients.keys()))
@@ -363,10 +429,9 @@ async def go_to_group(event):
         random_talk_docs = await cursor_talk.to_list(length=1)
         seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
         
-        # Peer Casting Error အတွက် get_entity ဖြင့် သေချာပြောင်းလဲပြီးမှ ပို့သည်
         chat_entity = await client.get_entity(TARGET_GROUP)
         await client.send_message(chat_entity, seed_text)
-        await bot.send_message(OWNER_ID, "💬 🔥 **Seed Message အောင်မြင်စွာ ပို့ပြီးပါပြီ။ စကားဝိုင်း အရှိန်ပြင်းပြင်းဖြင့် လည်ပတ်နေပါပြီ Chief!**")
+        await bot.send_message(OWNER_ID, "💬 🔥 **Seed Message အောင်မြင်စွာ ပို့ပြီးပါပြီ။ စကားဝိုင်း လည်ပတ်နေပါပြီ Chief!**")
         
     except Exception as e:
         await bot.send_message(OWNER_ID, f"❌ စကားစတင်ရန် Seed Message ပို့ခြင်း ကျရှုံးပါသည်- {e}")
@@ -388,6 +453,8 @@ async def startup():
         try:
             cl = TelegramClient(StringSession(doc["session"]), APP_ID, APP_HASH)
             await cl.start()
+            
+            # စာပြန်မယ့် Event Handler ရော ချိတ်ဆက်ပေးထားပါတယ်
             cl.add_event_handler(on_userbot_message, events.NewMessage)
             talking_clients[doc["user_id"]] = cl
             logging.info(f"✅ Successfully loaded talker account: @{doc.get('username')}")
@@ -400,3 +467,4 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
+
