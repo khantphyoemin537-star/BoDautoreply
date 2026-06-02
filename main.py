@@ -88,6 +88,9 @@ async def on_userbot_message(event):
     if not available_ids:
         available_ids = list(talking_clients.keys())
         
+    if not available_ids:
+        return
+        
     chosen_id = random.choice(available_ids)
     client = talking_clients[chosen_id]
 
@@ -100,41 +103,58 @@ async def on_userbot_message(event):
             match_pipeline = [
                 {"$match": {
                     "$and": [
-                        {"$expr": {"$gte": [{"$strLenCP": "$trigger"}, 3]}},
+                        {"$expr": {"$expr": {"$gte": [{"$strLenCP": "$trigger"}, 3]}}},
                         {"trigger": {"$regex": user_text, "$options": "i"}}
                     ]
                 }},
                 {"$sample": {"size": 1}}
             ]
-            cursor_match = reply_save_col.aggregate(match_pipeline)
-            matched_docs = await cursor_match.to_list(length=1)
+            try:
+                cursor_match = reply_save_col.aggregate(match_pipeline)
+                matched_docs = await cursor_match.to_list(length=1)
+                if matched_docs and matched_docs[0].get("responses"):
+                    reply_text = random.choice(matched_docs[0]["responses"])
+            except Exception:
+                reply_text = None
 
-            if matched_docs and matched_docs[0].get("responses"):
-                reply_text = random.choice(matched_docs[0]["responses"])
-            else:
-                pipeline_fallback = [{"$sample": {"size": 1}}]
-                cursor_fallback = reply_save_col.aggregate(pipeline_fallback)
-                random_docs = await cursor_fallback.to_list(length=1)
-                
-                if random_docs and random_docs[0].get("responses"):
-                    reply_text = random.choice(random_docs[0]["responses"])
-                else:
+            if not reply_text:
+                try:
+                    pipeline_fallback = [{"$sample": {"size": 1}}]
+                    cursor_fallback = reply_save_col.aggregate(pipeline_fallback)
+                    random_docs = await cursor_fallback.to_list(length=1)
+                    if random_docs and random_docs[0].get("responses"):
+                        reply_text = random.choice(random_docs[0]["responses"])
+                except Exception:
+                    reply_text = None
+                    
+            if not reply_text:
+                try:
+                    pipeline_fallback = [{"$sample": {"size": 1}}]
                     cursor_talk = talk_col.aggregate(pipeline_fallback)
                     random_talk_docs = await cursor_talk.to_list(length=1)
                     reply_text = random_talk_docs[0].get("text") if random_talk_docs else None
+                except Exception:
+                    reply_text = None
         else:
-            cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
-            random_talk_docs = await cursor_talk.to_list(length=1)
-            reply_text = random_talk_docs[0].get("text") if random_talk_docs else None
+            try:
+                cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
+                random_talk_docs = await cursor_talk.to_list(length=1)
+                reply_text = random_talk_docs[0].get("text") if random_talk_docs else None
+            except Exception:
+                reply_text = None
+
+        # 🛡️ [FIXED] Database Fallback Break: DB ထဲတွင် စာလုံးဝမရှိပါက စကားဝိုင်းရပ်မသွားစေရန် ကျပန်းစာသား ထည့်ပေးခြင်း
+        if not reply_text:
+            default_phrases = ["ဟုတ်ပဗျာ", "အေးပါဗျာ", "ဒါနဲ့လေ...", "ဟီးဟီး", "မဆိုးပါဘူး", "ဟုတ်လား Chief", "အော်... အင်း"]
+            reply_text = random.choice(default_phrases)
 
         if reply_text:
-            # ⚡ [TURBO MODE] - စုစုပေါင်း ၅ စက္ကန့် ဝန်းကျင်ဖြစ်စေရန် ညှိထားသောအပိုင်း
             # Cooldown (၂.၅ မှ ၃.၅ စက္ကန့်) -> ပျှမ်းမျှ ၃ စက္ကန့်
             await asyncio.sleep(random.uniform(2.5, 3.5))
             
-            # Typing Status (၁.၅ မှIDI ၂.၅ စက္ကန့်) -> ပျှမ်းမျှ ၂ စက္ကန့်
+            # Typing Status (၁.၁ မှ ၂.၅ စက္ကန့်) -> ပျှမ်းမျှ ၂ စက္ကန့်
             async with client.action(TARGET_GROUP, 'typing'):
-                await asyncio.sleep(random.uniform(1.5, 2.5))
+                await asyncio.sleep(random.uniform(1.1, 2.5))
             
             if should_reply:
                 await client.send_message(TARGET_GROUP, reply_text, reply_to=event.id)
@@ -167,7 +187,7 @@ async def handle_admin_commands(event):
                 await event.reply("❌ **Chief! အကောင့်အရေအတွက် အများဆုံး (၁၀) ခု ပြည့်နေပါပြီဗျာ။**")
                 return
                 
-            status_msg = await event.reply("⏳ String Session ကို စစ်ဆေးပြီး ချိတ်ဆက်နေပါသည် Chief...")
+            status_msg = await event.reply("⏳ String Session ကို စစ်ဆေးပြီး ချဆက်နေပါသည် Chief...")
             
             try:
                 new_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
@@ -219,11 +239,13 @@ async def handle_admin_commands(event):
                     invite_hash = hash_match.group(1)
                     invite_info = await first_cl(CheckChatInviteRequest(invite_hash))
                     if hasattr(invite_info, 'chat') and invite_info.chat:
-                        resolved_id = telethon.utils.get_peer_id(invite_info.chat)
+                        # 🛠️ [FIXED] client.get_peer_id() သုံးပြီး မှန်ကန်သော Signed Negative ID ကို ယူခြင်း
+                        resolved_id = first_cl.get_peer_id(invite_info.chat)
             else:
                 username = target_link.split('/')[-1].replace('@', '')
                 entity = await first_cl.get_entity(username)
-                resolved_id = telethon.utils.get_peer_id(entity)
+                # 🛠️ [FIXED] client.get_peer_id() သုံးပြီး မှန်ကန်သော Signed Negative ID ကို ယူခြင်း
+                resolved_id = first_cl.get_peer_id(entity)
         except Exception as ex:
             logging.error(f"Group Link Resolution Error: {ex}")
             
@@ -270,6 +292,10 @@ async def handle_admin_commands(event):
 
     # 💬 CROSSTALK START COMMAND
     elif cmd == "/စကားပြော":
+        if not talking_clients:
+            await event.reply("❌ **Chief! Active ဖြစ်နေတဲ့ Userbot တစ်ခုမှ မရှိသေးပါဘူးဗျာ။ အရင်ဆုံး String ထည့်ပေးပါဦး။**")
+            return
+            
         is_crosstalk_active = True
         await event.reply(f"💬 🔥 **Multi-Bot Perpetual Cross-Talk စနစ်ကို ID: `{TARGET_GROUP}` တွင် အမြန်နှုန်းဖြင့် အသစ်ပြန်လည် စတင်လိုက်ပါပြီ Chief!**")
         
@@ -282,6 +308,7 @@ async def handle_admin_commands(event):
             await client.send_message(TARGET_GROUP, seed_text)
         except Exception as e:
             logging.error(f"❌ Failed to send starter seed message: {e}")
+            await event.reply(f"❌ **စကားစတင်ရန် Seed Message ပို့ခြင်း ကျရှုံးပါသည်- {e}**")
 
     # 🛑 CROSSTALK STOP COMMAND
     elif cmd == "/နား":
