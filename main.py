@@ -4,12 +4,12 @@ import asyncio
 import random
 import logging
 import re
-import telethon.utils
 from telethon import TelegramClient, events, errors
 from telethon.sessions import StringSession
 from motor.motor_asyncio import AsyncIOMotorClient
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.utils import get_peer_id  # ပြဿနာကင်းဝေးအောင် အသုံးပြုရန် Import လုပ်ထားသည်
 
 # Setup basic logging to see bot activity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,6 +36,7 @@ usertalking_col = db["usertalking"]
 talking_clients = {}            
 is_crosstalk_active = False     
 last_processed_msg_id = None  
+current_speed = 2  # Default Speed: 2 (Normal), 1 = Slow, 3 = Fast
 
 # Initialize Official Control Bot
 bot = TelegramClient('official_crosstalk_bot', APP_ID, APP_HASH)
@@ -64,7 +65,7 @@ async def start_dummy_web_server():
 # 💬 🧠 FAST CROSSTALK ENGINE (USERBOT HANDLER)
 # ==========================================
 async def on_userbot_message(event):
-    global is_crosstalk_active, talking_clients, TARGET_GROUP, last_processed_msg_id
+    global is_crosstalk_active, talking_clients, TARGET_GROUP, last_processed_msg_id, current_speed, OWNER_ID
     
     if not is_crosstalk_active:
         return
@@ -72,7 +73,11 @@ async def on_userbot_message(event):
     if event.chat_id != TARGET_GROUP:
         return
 
-    if event.sender_id not in talking_clients:
+    # Owner ဆီကစာ သို့မဟုတ် Active ဖြစ်နေတဲ့ Userbot အချင်းချင်းဆီကစာ ဖြစ်မှ အလုပ်လုပ်မည်
+    is_owner = (event.sender_id == OWNER_ID)
+    is_userbot = (event.sender_id in talking_clients)
+    
+    if not (is_owner or is_userbot):
         return
 
     if last_processed_msg_id == event.id:
@@ -83,6 +88,11 @@ async def on_userbot_message(event):
     if not user_text:
         return
 
+    # Admin command/speed command တွေကို စကားပြောထဲမထည့်ရန် ကျော်ပစ်မည်
+    if user_text.startswith('.') or user_text.startswith('/'):
+        return
+
+    # စာပြန်မယ့် အကောင့်ထဲကနေ လက်ရှိစာပို့လိုက်တဲ့အကောင့်ကို ဖယ်ထုတ်ပြီး ကျန်တဲ့ကောင်တွေထဲက ရွေးမည်
     available_ids = [uid for uid in talking_clients.keys() if uid != event.sender_id]
     if not available_ids:
         available_ids = list(talking_clients.keys())
@@ -146,15 +156,29 @@ async def on_userbot_message(event):
             reply_text = random.choice(default_phrases)
 
         if reply_text:
-            await asyncio.sleep(random.uniform(2.5, 3.5))
+            # ⚙️ Speed Level အလိုက် အချိန်စောင့်ဆိုင်းမှုကို တွက်ချက်ခြင်း
+            if current_speed == 1:    # Slow
+                initial_delay = random.uniform(4.0, 6.5)
+                typing_delay = random.uniform(3.0, 5.0)
+            elif current_speed == 3:  # Fast
+                initial_delay = random.uniform(0.5, 1.2)
+                typing_delay = random.uniform(0.5, 1.5)
+            else:                     # Normal (Speed 2)
+                initial_delay = random.uniform(2.0, 3.5)
+                typing_delay = random.uniform(1.1, 2.5)
+
+            await asyncio.sleep(initial_delay)
             
-            async with client.action(TARGET_GROUP, 'typing'):
-                await asyncio.sleep(random.uniform(1.1, 2.5))
+            # Peer Casting Bug မတက်စေရန် စာမပို့မီ Chat Entity ကို သေချာဆွဲထုတ်ပြီးမှ ပို့မည်
+            chat_entity = await client.get_entity(TARGET_GROUP)
+            
+            async with client.action(chat_entity, 'typing'):
+                await asyncio.sleep(typing_delay)
             
             if should_reply:
-                await client.send_message(TARGET_GROUP, reply_text, reply_to=event.id)
+                await client.send_message(chat_entity, reply_text, reply_to=event.id)
             else:
-                await client.send_message(TARGET_GROUP, reply_text)
+                await client.send_message(chat_entity, reply_text)
 
     except errors.rpcerrorlist.FloodWaitError as e:
         logging.warning(f"⚠️ FloodWait မိသွားပါသည်။ {e.seconds} စက္ကန့် စောင့်ဆိုင်းနေပါသည်...")
@@ -167,9 +191,23 @@ async def on_userbot_message(event):
 # ==========================================
 @bot.on(events.NewMessage(from_users=OWNER_ID)) 
 async def handle_admin_commands(event):
-    global talking_clients, is_crosstalk_active, TARGET_GROUP
+    global talking_clients, is_crosstalk_active, TARGET_GROUP, current_speed
     
     cmd = event.message.text.strip() if event.message.text else ""
+
+    # ⚡ SPEED CONTROL COMMANDS (.spd 1, .spd 2, .spd 3)
+    if cmd in [".spd 1", "spd 1"]:
+        current_speed = 1
+        await event.reply("⚡ **Crosstalk Speed ကို Slow (နှေးကွေးသောနှုန်း) သို့ ပြောင်းလဲလိုက်ပါပြီ Chief!**")
+        return
+    elif cmd in [".spd 2", "spd 2"]:
+        current_speed = 2
+        await event.reply("⚡ **Crosstalk Speed ကို Normal (ပုံမှန်နှုန်း) သို့ ပြောင်းလဲလိုက်ပါပြီ Chief!**")
+        return
+    elif cmd in [".spd 3", "spd 3"]:
+        current_speed = 3
+        await event.reply("⚡ **Crosstalk Speed ကို Fast (အမြန်နှုန်း) သို့ ပြောင်းလဲလိုက်ပါပြီ Chief!**")
+        return
 
     # 📥 MULTI-BOT /string MANAGEMENT
     if cmd == "/string" and event.is_reply:
@@ -217,7 +255,10 @@ async def handle_admin_commands(event):
             cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
             random_talk_docs = await cursor_talk.to_list(length=1)
             seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
-            await client.send_message(TARGET_GROUP, seed_text)
+            
+            # Peer casting error ကိုဖြေရှင်းရန် get_entity ကို သုံးထားပါသည်
+            chat_entity = await client.get_entity(TARGET_GROUP)
+            await client.send_message(chat_entity, seed_text)
         except Exception as e:
             logging.error(f"❌ Failed to send starter seed message: {e}")
             await event.reply(f"❌ **စကားစတင်ရန် Seed Message ပို့ခြင်း ကျရှုံးပါသည်- {e}**")
@@ -232,7 +273,7 @@ async def handle_admin_commands(event):
         await event.reply("🛑 **Chief ရဲ့ အမိန့်အရ စကားပြောစနစ်ကို ချက်ချင်း ရပ်တန့်လိုက်ပါပြီဗျာ။**")
 
 
-# 🎯 [STANDALONE COMMAND] /သွားမယ် စနစ်အသစ် (ခွဲထုတ်ပြီးသားအပိုင်း)
+# 🎯 [STANDALONE COMMAND] /သွားမယ် စနစ်အသစ်
 @bot.on(events.NewMessage(from_users=OWNER_ID, pattern=r'^/သွားမယ်'))
 async def go_to_group(event):
     global TARGET_GROUP, is_crosstalk_active
@@ -260,14 +301,16 @@ async def go_to_group(event):
             try:
                 invite_info = await first_cl(CheckChatInviteRequest(invite_hash))
                 if hasattr(invite_info, 'chat') and invite_info.chat:
-                    resolved_id = first_cl.get_peer_id(invite_info.chat)
+                    resolved_id = get_peer_id(invite_info.chat)
             except Exception:
                 pass
 
             joined_count = 0
             for cl_id, cl in talking_clients.items():
                 try:
-                    await cl(ImportChatInviteRequest(invite_hash))
+                    updates = await cl(ImportChatInviteRequest(invite_hash))
+                    if not resolved_id and updates and hasattr(updates, 'chats') and updates.chats:
+                        resolved_id = get_peer_id(updates.chats[0])
                     joined_count += 1
                 except errors.UserAlreadyParticipantError:
                     joined_count += 1
@@ -279,7 +322,7 @@ async def go_to_group(event):
         else:
             username = argument.replace("https://t.me/", "").replace("@", "").split('/')[0]
             entity = await first_cl.get_entity(username)
-            resolved_id = first_cl.get_peer_id(entity)
+            resolved_id = get_peer_id(entity)
             
             joined_count = 0
             for cl_id, cl in talking_clients.items():
@@ -313,7 +356,9 @@ async def go_to_group(event):
         random_talk_docs = await cursor_talk.to_list(length=1)
         seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
         
-        await client.send_message(TARGET_GROUP, seed_text)
+        # Peer Casting Error အတွက် get_entity ဖြင့် သေချာပြောင်းလဲပြီးမှ ပို့သည်
+        chat_entity = await client.get_entity(TARGET_GROUP)
+        await client.send_message(chat_entity, seed_text)
         await bot.send_message(OWNER_ID, "💬 🔥 **Seed Message အောင်မြင်စွာ ပို့ပြီးပါပြီ။ စကားဝိုင်း အရှိန်ပြင်းပြင်းဖြင့် လည်ပတ်နေပါပြီ Chief!**")
         
     except Exception as e:
@@ -331,6 +376,7 @@ async def startup():
 
     logging.info("⏳ Loading Simulator Accounts from MongoDB...")
     cursor_talkers = usertalking_col.find({})
+    async Gear = []
     async for doc in cursor_talkers:
         try:
             cl = TelegramClient(StringSession(doc["session"]), APP_ID, APP_HASH)
