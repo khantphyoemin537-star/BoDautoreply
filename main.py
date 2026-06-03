@@ -13,7 +13,7 @@ from telethon.tl.functions.account import UpdateProfileRequest
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.utils import get_peer_id
 from telethon.tl.functions.phone import JoinGroupCallRequest
-from telethon.tl.types import InputGroupCall, UpdateGroupCall, MessageEntityMention, MessageEntityMentionName
+from telethon.tl.types import InputGroupCall, UpdateGroupCall, MessageEntityMention, MessageEntityMentionName, MessageEntityTextUrl
 
 # Setup basic logging to see bot activity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,11 +40,13 @@ usertalking_col = db["usertalking"]
 talking_clients = {}            
 pytgcalls_clients = {}          
 is_crosstalk_active = False     
-is_random_reply_active = False  # No.1 ရမ်းစနစ်အတွက် Global State
-is_scraping_active = False      # No.2 Scraper အလုပ်လုပ်နေခြင်း ရှိ/မရှိ
-should_stop_scraping = False    # No.2 ရပ်တန့်ရန် အချက်ပြချက်
+is_random_reply_active = False  
+is_scraping_active = False      
+should_stop_scraping = False    
 last_processed_msg_id = None  
-last_message_time = time.time() # No.3 စကားဝိုင်းမရပ်တန့်စေရန် အချိန်မှတ်စနစ်
+last_message_time = time.time() 
+last_send_timestamp = 0         # Global Flood Control
+is_autodelete_active = False    # Auto-delete state for /ဖျက်မည်
 current_speed = 2  
 
 # Initialize Official Control Bot
@@ -100,29 +102,51 @@ async def handle_voice_chat_updates(event):
                 asyncio.create_task(join_voice_chat(cl_id, cl, TARGET_GROUP))
                 await asyncio.sleep(1.0)
 
+# ==========================================
+# 🔍 BULLETPROOF MENTION FILTER FUNCTION
+# ==========================================
 def has_mention(message):
-    """ မက်ဆေ့ခ်ျထဲတွင် @mention သို့မဟုတ် Username မပါသော နာမည် Mention များ ပါဝင်နေသလား စစ်ဆေးခြင်း """
+    """ HTML Format၊ Text Link နှင့် Native Entities ပုံစံမျိုးစုံဖြင့် Mention Tag ခေါ်ထားမှုများကို အကုန်စစ်ဆေးခြင်း """
     if not message or not message.text:
         return False
         
-    # Telegram ရဲ့ Native Mention Entities စစ်ဆေးခြင်း (@username ရော၊ နာမည်ကိုနှိပ်ရင် Profile ပွင့်တဲ့ Mention ပါအကျုံးဝင်သည်)
+    # ၁။ Telethon Entities စစ်ဆေးခြင်း
     if message.entities:
         for entity in message.entities:
             if isinstance(entity, (MessageEntityMention, MessageEntityMentionName)):
                 return True
+            if isinstance(entity, MessageEntityTextUrl):
+                if entity.url and ("tg://user" in entity.url or "t.me/" in entity.url):
+                    return True
                 
-    # စာသားထဲတွင် @ ပါဝင်နေပါကလည်း Backup အနေဖြင့် ဖယ်ထုတ်ရန်
-    if '@' in message.text:
+    # ၂။ Raw String နှင့် HTML Clean-up စစ်ဆေးခြင်း
+    clean_text = re.sub(r'<[^>]+>', '', message.text)
+    if '@' in clean_text:
         return True
         
     return False
+
+async def delete_after_delay(client, chat_entity, msg_id, delay=3.0):
+    """ Bot စာသားများအား သတ်မှတ်စက္ကန့်ပြည့်ပါက အလိုအလျောက် ပြန်ဖျက်ပေးမည့် Helper """
+    await asyncio.sleep(delay)
+    try:
+        await client.delete_messages(chat_entity, msg_id)
+        logging.info(f"🗑️ Auto-deleted bot message: {msg_id}")
+    except Exception as e:
+        logging.error(f"❌ Auto-delete execution failed: {e}")
 
 # ==========================================
 # 🧠 DB SEARCH UTILITY FUNCTION
 # ==========================================
 async def fetch_smart_reply(user_text, should_reply=True):
-    """ စာသားအလိုက် သင့်တော်မည့် Reply သို့မဟုတ် Fallback ကို DB ထဲမှ ဆွဲထုတ်ပေးမည့် Function """
+    """ DB ထဲမှ ဆွဲထုတ်ရာတွင်လည်း Mention ပါသော စာသားများအား ညှပ်ထုတ်သန့်စင်ပေးသည့် စနစ်ဆန်း """
     reply_text = None
+    
+    def is_clean(text):
+        if not text or '@' in text or 't.me/' in text:
+            return False
+        return True
+
     if should_reply:
         match_pipeline = [
             {"$match": {
@@ -133,37 +157,53 @@ async def fetch_smart_reply(user_text, should_reply=True):
                     ]
                 }
             }},
-            {"$sample": {"size": 1}}
+            {"$sample": {"size": 3}} # Backup ယူရန် ပိုဆွဲမည်
         ]
         try:
             cursor_match = reply_save_col.aggregate(match_pipeline)
-            matched_docs = await cursor_match.to_list(length=1)
-            if matched_docs and matched_docs[0].get("responses"):
-                reply_text = random.choice(matched_docs[0]["responses"])
+            matched_docs = await cursor_match.to_list(length=3)
+            for doc in matched_docs:
+                if doc.get("responses"):
+                    chosen = random.choice(doc["responses"])
+                    if is_clean(chosen):
+                        reply_text = chosen
+                        break
         except Exception:
             reply_text = None
 
         if not reply_text:
             try:
-                cursor_fallback = reply_save_col.aggregate([{"$sample": {"size": 1}}])
-                random_docs = await cursor_fallback.to_list(length=1)
-                if random_docs and random_docs[0].get("responses"):
-                    reply_text = random.choice(random_docs[0]["responses"])
+                cursor_fallback = reply_save_col.aggregate([{"$sample": {"size": 3}}])
+                random_docs = await cursor_fallback.to_list(length=3)
+                for doc in random_docs:
+                    if doc.get("responses"):
+                        chosen = random.choice(doc["responses"])
+                        if is_clean(chosen):
+                            reply_text = chosen
+                            break
             except Exception:
                 reply_text = None
                 
         if not reply_text:
             try:
-                cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
-                random_talk_docs = await cursor_talk.to_list(length=1)
-                reply_text = random_talk_docs[0].get("text") if random_talk_docs else None
+                cursor_talk = talk_col.aggregate([{"$sample": {"size": 3}}])
+                random_talk_docs = await cursor_talk.to_list(length=3)
+                for doc in random_talk_docs:
+                    chosen = doc.get("text")
+                    if is_clean(chosen):
+                        reply_text = chosen
+                        break
             except Exception:
                 reply_text = None
     else:
         try:
-            cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
-            random_talk_docs = await cursor_talk.to_list(length=1)
-            reply_text = random_talk_docs[0].get("text") if random_talk_docs else None
+            cursor_talk = talk_col.aggregate([{"$sample": {"size": 3}}])
+            random_talk_docs = await cursor_talk.to_list(length=3)
+            for doc in random_talk_docs:
+                chosen = doc.get("text")
+                if is_clean(chosen):
+                    reply_text = chosen
+                    break
         except Exception:
             reply_text = None
 
@@ -177,34 +217,37 @@ async def fetch_smart_reply(user_text, should_reply=True):
 # 🎯 No.1 ရမ်းစနစ်အတွက် ပြင်ပလူများကို တုံ့ပြန်မှု Engine
 # ==========================================
 async def handle_random_people_reply(event):
-    global talking_clients, TARGET_GROUP
-    user_text = event.message.text.strip() if event.message.text else ""
-    if not user_text:
+    global talking_clients, TARGET_GROUP, is_autodelete_active
+    
+    # အခြား Admin Bot များဖြစ်ပါက လုံးဝမတုံ့ပြန်ရန်
+    sender = await event.get_sender()
+    if sender and sender.bot:
         return
 
-    # တုံ့ပြန်ရန် အနည်းဆုံး Userbot ၂ ကောင် ယူမည်
+    user_text = event.message.text.strip() if event.message.text else ""
+    if not user_text or has_mention(event.message):
+        return
+
     available_ids = list(talking_clients.keys())
-    if len(available_ids) < 2:
+    if not available_ids:
         return
     
-    chosen_ids = random.sample(available_ids, 2)
-    bot1, bot2 = talking_clients[chosen_ids[0]], talking_clients[chosen_ids[1]]
+    # 💥 စည်းမျဉ်းအသစ်အရ အတိအကျ ၁ ကောင်တည်းသာ ရမ်းတုံ့ပြန်မည်
+    chosen_id = random.choice(available_ids)
+    bot1 = talking_clients[chosen_id]
     chat_entity = await bot1.get_entity(TARGET_GROUP)
 
     try:
-        # Bot 1 မှ စတင် Reply ပြန်ခြင်း
         reply_1 = await fetch_smart_reply(user_text, should_reply=True)
         await asyncio.sleep(random.uniform(1.5, 3.0))
         async with bot1.action(chat_entity, 'typing'):
             await asyncio.sleep(random.uniform(1.0, 2.0))
         msg1 = await bot1.send_message(chat_entity, reply_1, reply_to=event.id)
 
-        # Bot 2 မှ Bot 1 ၏ စကားအပေါ် ထပ်ဆင့်အဆက်အစပ်ရှိရှိ Reply ပြန်ခြင်း
-        reply_2 = await fetch_smart_reply(reply_1, should_reply=True)
-        await asyncio.sleep(random.uniform(2.0, 4.0))
-        async with bot2.action(chat_entity, 'typing'):
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-        await bot2.send_message(chat_entity, reply_2, reply_to=msg1.id)
+        # /ဖျက်မည် စနစ် On ထားပါက ၃ စက္ကန့်အကြာတွင် ဖျက်ပစ်ခြင်း
+        if is_autodelete_active:
+            asyncio.create_task(delete_after_delay(bot1, chat_entity, msg1.id, delay=3.0))
+            
     except Exception as e:
         logging.error(f"❌ Error in Random People Reply System: {e}")
 
@@ -212,9 +255,14 @@ async def handle_random_people_reply(event):
 # 💬 🧠 FAST CROSSTALK ENGINE (USERBOT HANDLER)
 # ==========================================
 async def on_userbot_message(event):
-    global is_crosstalk_active, is_random_reply_active, talking_clients, TARGET_GROUP, last_processed_msg_id, current_speed, OWNER_ID, last_message_time
+    global is_crosstalk_active, is_random_reply_active, talking_clients, TARGET_GROUP, last_processed_msg_id, current_speed, OWNER_ID, last_message_time, last_send_timestamp, is_autodelete_active
     
     if event.chat_id != TARGET_GROUP:
+        return
+
+    # စကားပြောလာသူသည် Bot ဖြစ်နေပါက ချက်ချင်းကျော်မည် (မတုံ့ပြန်ပါ)
+    sender = await event.get_sender()
+    if sender and sender.bot:
         return
 
     is_owner = (event.sender_id == OWNER_ID)
@@ -238,7 +286,6 @@ async def on_userbot_message(event):
     if last_processed_msg_id == event.id:
         return
     last_processed_msg_id = event.id
-    last_message_time = time.time()  # အချိန်ကို နောက်ဆုံးအခြေအနေသို့ မွမ်းမံခြင်း
 
     user_text = event.message.text.strip().lower() if event.message.text else ""
     if not user_text:
@@ -251,6 +298,20 @@ async def on_userbot_message(event):
     if user_text.startswith('.') or user_text.startswith('/'):
         return
 
+    # 🛑 MULTI-BOT CASCADE FLOOD PROTECTION (လိုင်းနင်းကန်ထွက်ခြင်းကို ထိန်းချုပ်သည့် စမတ်ကုဒ်)
+    now = time.time()
+    if current_speed == 1:    
+        min_interval = 7.0   # Speed 1 ဆိုလျှင် စကားတစ်ခွန်းကြား အနည်းဆုံး ၇ စက္ကန့် ခြားမည်
+    elif current_speed == 3:  
+        min_interval = 1.5   
+    else:                     
+        min_interval = 3.5   
+        
+    if now - last_send_timestamp < min_interval:
+        return # သတ်မှတ်စက္ကန့်မပြည့်မချင်း အခြား Userbot များ ဝင်မပြောရအောင် Event ကို ချနင်းလိုက်ခြင်း
+        
+    last_send_timestamp = now  # Lock ချလိုက်ပြီ
+    last_message_time = now
 
     available_ids = [uid for uid in talking_clients.keys() if uid != event.sender_id]
     if not available_ids:
@@ -282,11 +343,15 @@ async def on_userbot_message(event):
             await asyncio.sleep(typing_delay)
         
         if should_reply:
-            await client.send_message(chat_entity, reply_text, reply_to=event.id)
+            sent_msg = await client.send_message(chat_entity, reply_text, reply_to=event.id)
         else:
-            await client.send_message(chat_entity, reply_text)
+            sent_msg = await client.send_message(chat_entity, reply_text)
             
-        last_message_time = time.time() # ပို့ပြီးတိုင်း အချိန်ထပ်မှတ်မည်
+        last_message_time = time.time() 
+
+        # /ဖျက်မည် စနစ် On ထားပါက ၃ စက္ကန့်အကြာတွင် ဖျက်ပစ်ခြင်း
+        if is_autodelete_active:
+            asyncio.create_task(delete_after_delay(client, chat_entity, sent_msg.id, delay=3.0))
 
     except errors.rpcerrorlist.FloodWaitError as e:
         await asyncio.sleep(e.seconds)
@@ -297,8 +362,7 @@ async def on_userbot_message(event):
 # ♻️ No.3 PERPETUAL CROSSTALK SUPERVISOR
 # ==========================================
 async def crosstalk_supervisor():
-    """ စကားဝိုင်း ၁၂ စက္ကန့်ထက်ပိုပြီး ငြိမ်သက်သွားပါက အလိုအလျောက် စကားပြန်စစေမည့် စနစ် """
-    global is_crosstalk_active, talking_clients, TARGET_GROUP, last_message_time
+    global is_crosstalk_active, talking_clients, TARGET_GROUP, last_message_time, is_autodelete_active
     while True:
         await asyncio.sleep(4)
         if is_crosstalk_active and talking_clients:
@@ -311,9 +375,15 @@ async def crosstalk_supervisor():
                     random_talk_docs = await cursor_talk.to_list(length=1)
                     seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဒါနဲ့ ဘာတွေဆက်ပြောကြမလဲဗျာ..."
                     
+                    if '@' in seed_text or 't.me/' in seed_text:
+                        seed_text = "ဒါနဲ့ နောက်ဘာဆက်ပြောမလဲ..."
+
                     chat_entity = await client.get_entity(TARGET_GROUP)
-                    await client.send_message(chat_entity, seed_text)
+                    sent_msg = await client.send_message(chat_entity, seed_text)
                     last_message_time = time.time()
+                    
+                    if is_autodelete_active:
+                        asyncio.create_task(delete_after_delay(client, chat_entity, sent_msg.id, delay=3.0))
                 except Exception as e:
                     logging.error(f"❌ Supervisor System Error: {e}")
 
@@ -326,7 +396,6 @@ async def start_data_scraping(group_arg):
     is_scraping_active = True
     should_stop_scraping = False
     
-    # ပထမဆုံးရနိုင်သော Userbot တစ်ကောင်အား Scraping ပြုလုပ်ရန် အသုံးပြုခြင်း
     scraper_client = list(talking_clients.values())[0]
     
     try:
@@ -341,7 +410,7 @@ async def start_data_scraping(group_arg):
         await bot.send_message(OWNER_ID, "📥 **ဒေတာဘေ့စ် စမတ်ကျကျ သိမ်းဆည်းခြင်းလုပ်ငန်းစဉ်ကို စတင်နေပါပြီ Chief...**")
         
         saved_count = 0
-        msg_cache = {} # Memory Cache စနစ်ဖြင့် Parent Message ကို လျင်မြန်စွာလှမ်းဖတ်ခြင်း
+        msg_cache = {} 
         
         async for msg in scraper_client.iter_messages(target_entity, limit=20000):
             if should_stop_scraping:
@@ -350,18 +419,15 @@ async def start_data_scraping(group_arg):
             if not msg.text:
                 continue
                 
-            # ✨ Mention (Tag) ခေါ်ထားသော မက်ဆေ့ခ်ျများကို DB ထဲမမှတ်မိစေရန် ကျော်သွားခြင်း
             if has_mention(msg):
                 continue
                 
             text_clean = msg.text.strip()
             msg_cache[msg.id] = text_clean
         
-            # Reply မက်ဆေ့ခ်ျ ဖြစ်ပါက Context Database ထဲသို့ သိမ်းဆည်းခြင်း
             if msg.reply_to and msg.reply_to.reply_to_msg_id in msg_cache:
                 parent_text = msg_cache[msg.reply_to.reply_to_msg_id]
                 if len(parent_text) >= 3 and text_clean:
-                    # Smart Duplicate Skip ($addToSet ဖြင့် ရှိပြီးသား Response ကို ထပ်မတိုးစေဘဲ ကျော်သွားခြင်း)
                     await reply_save_col.update_one(
                         {"trigger": parent_text},
                         {"$addToSet": {"responses": text_clean}},
@@ -369,7 +435,6 @@ async def start_data_scraping(group_arg):
                     )
                     saved_count += 1
             else:
-                # ရိုးရိုး မက်ဆေ့ခ်ျ ဖြစ်ပါက Talk Database သို့ စမတ်ကျကျ သိမ်းဆည်းခြင်း
                 await talk_col.update_one(
                     {"text": text_clean},
                     {"$set": {"text": text_clean}},
@@ -377,7 +442,6 @@ async def start_data_scraping(group_arg):
                 )
                 saved_count += 1
                 
-            # စာသား ၁၀၀၀ ပြည့်တိုင်း အစီရင်ခံစာ ပို့ပေးခြင်း
             if saved_count > 0 and saved_count % 1000 == 0:
                 await bot.send_message(
                     OWNER_ID, 
@@ -386,7 +450,7 @@ async def start_data_scraping(group_arg):
                     f"လုပ်ငန်းစဉ် ဆက်လက်လည်ပတ်နေပါသည်။ ရပ်တန့်လိုပါက `/ရပ်` ဟု ပို့နိုင်ပါသည်။"
                 )
             
-            await asyncio.sleep(0.05) # Spam & Flood Protection Delay
+            await asyncio.sleep(0.05) 
             
         await bot.send_message(OWNER_ID, f"✅ **ဒေတာသိမ်းဆည်းခြင်း လုပ်ငန်းစဉ် အောင်မြင်စွာ ပြီးဆုံးပါပြီ။ စုစုပေါင်း: {saved_count} ခု**")
     except Exception as e:
@@ -399,14 +463,14 @@ async def start_data_scraping(group_arg):
 # ==========================================
 @bot.on(events.NewMessage(from_users=OWNER_ID)) 
 async def handle_admin_commands(event):
-    global talking_clients, is_crosstalk_active, is_random_reply_active, TARGET_GROUP, current_speed, should_stop_scraping, is_scraping_active
+    global talking_clients, is_crosstalk_active, is_random_reply_active, TARGET_GROUP, current_speed, should_stop_scraping, is_scraping_active, is_autodelete_active
     
     cmd = event.message.text.strip() if event.message.text else ""
 
     # ⚡ SPEED CONTROL COMMANDS
     if cmd in [".spd 1", "spd 1"]:
         current_speed = 1
-        await event.reply("⚡ **Crosstalk Speed ကို Slow သို့ ပြောင်းလဲလိုက်ပါပြီ Chief!**")
+        await event.reply("⚡ **Crosstalk Speed ကို Slow သို့ ပြောင်းလဲလိုက်ပါပြီ Chief! (၇ စက္ကန့် ခြားပါမည်)**")
         return
     elif cmd in [".spd 2", "spd 2"]:
         current_speed = 2
@@ -421,7 +485,14 @@ async def handle_admin_commands(event):
     elif cmd in ["/ရမ်း", ".ရမ်း", "ရမ်း"]:
         is_random_reply_active = not is_random_reply_active
         status = "ဖွင့်လှစ်" if is_random_reply_active else "ပိတ်သိမ်း"
-        await event.reply(f"🎯 **ပြင်ပလူများအား ပူးပေါင်းတုံ့ပြန်မည့် ရမ်းစနစ်ကို {status}လိုက်ပါပြီ Chief!**")
+        await event.reply(f"🎯 **ပြင်ပလူများအား (အကောင့် ၁ ကောင်တည်းဖြင့်) တုံ့ပြန်မည့် ရမ်းစနစ်ကို {status}လိုက်ပါပြီ Chief!**")
+        return
+
+    # 🗑️ /ဖျက်မည် PERSISTENT AUTO-DELETE TOGGLE COMMAND
+    elif cmd in ["/ဖျက်မည်", ".ဖျက်မည်", "ဖျက်မည်"]:
+        is_autodelete_active = not is_autodelete_active
+        status = "ဖွင့်လှစ်" if is_autodelete_active else "ပိတ်သိမ်း"
+        await event.reply(f"🗑️ **ပို့ပြီးသား Bot စာများကို ၃ စက္ကန့်အကြာတွင် အလိုအလျောက်ဖျက်မည့် စနစ်ကို {status}လိုက်ပါပြီ Chief!**")
         return
 
     # 📥 No.2 /သိမ်းဆည်းမယ် နှင့် /ရပ် စနစ်များ
@@ -507,8 +578,15 @@ async def handle_admin_commands(event):
             cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
             random_talk_docs = await cursor_talk.to_list(length=1)
             seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
+            
+            if '@' in seed_text or 't.me/' in seed_text:
+                seed_text = "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
+
             chat_entity = await client.get_entity(TARGET_GROUP)
-            await client.send_message(chat_entity, seed_text)
+            sent_msg = await client.send_message(chat_entity, seed_text)
+            
+            if is_autodelete_active:
+                asyncio.create_task(delete_after_delay(client, chat_entity, sent_msg.id, delay=3.0))
         except Exception as e:
             logging.error(f"❌ Failed to send starter seed message: {e}")
         return
@@ -526,7 +604,7 @@ async def handle_admin_commands(event):
     elif cmd.startswith("/ပို့"):
         parts = cmd.split(maxsplit=1)
         if len(parts) < 2:
-            await event.reply("❌ ကျေးဇူးပြု၍ ပို့လိုသော စာသားကို ထည့်သွင်းပေးပါ။\nဥပမာ- `/ပို့ မင်္ဂလာပါ`")
+            await event.reply("❌ ကျေးဇူးပြု၍ ပို့လိုသော Сာသားကို ထည့်သွင်းပေးပါ။\nဥပမာ- `/ပို့ မင်္ဂလာပါ`")
             return
         broadcast_text = parts[1].strip()
         await event.reply("⏳ **Userbots များရှိနေသော Group အားလုံးထံ စာသားဖြန့်ဝေနေပါသည်...**")
@@ -539,7 +617,7 @@ async def handle_admin_commands(event):
                         if dialog.is_group or dialog.is_channel:
                             try:
                                 await cl.send_message(dialog.id, broadcast_text)
-                                await asyncio.sleep(2.5) # Flood Protection Delay
+                                await asyncio.sleep(2.5) 
                             except Exception:
                                 continue
                 except Exception as e:
@@ -617,7 +695,7 @@ async def handle_admin_commands(event):
                         added_success += 1
                         if added_success % 5 == 0:
                             await bot.send_message(OWNER_ID, f"👥 **အဖွဲ့ဝင်သစ် ထည့်သွင်းမှု သတင်းစကား:** လူဦးရေ `{added_success}` ဦး လက်ရှိ Group ထဲသို့ ထည့်သွင်းပြီးပါပြီ။")
-                        await asyncio.sleep(4.5) # Flood Safe Slow-Delay
+                        await asyncio.sleep(4.5) 
                     except errors.rpcerrorlist.UserPrivacyRestrictedError:
                         continue
                     except errors.rpcerrorlist.FloodWaitError as e:
@@ -634,7 +712,7 @@ async def handle_admin_commands(event):
 # 🎯 [STANDALONE COMMAND] /သွားမယ် စနစ်
 @bot.on(events.NewMessage(from_users=OWNER_ID, pattern=r'^/သွားမယ်'))
 async def go_to_group(event):
-    global TARGET_GROUP, is_crosstalk_active, last_message_time
+    global TARGET_GROUP, is_crosstalk_active, last_message_time, is_autodelete_active
     text_parts = event.text.split(maxsplit=1)
     if len(text_parts) < 2:
         await event.respond("❌ ကျေးဇူးပြု၍ Group Link သို့မဟုတ် Username ထည့်ပေးပါ။")
@@ -700,9 +778,17 @@ async def go_to_group(event):
         cursor_talk = talk_col.aggregate([{"$sample": {"size": 1}}])
         random_talk_docs = await cursor_talk.to_list(length=1)
         seed_text = random_talk_docs[0].get("text") if random_talk_docs else "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
+        
+        if '@' in seed_text or 't.me/' in seed_text:
+            seed_text = "ဟယ်လို... အားလုံးပဲ မင်္ဂလာပါဗျာ။"
+
         chat_entity = await client.get_entity(TARGET_GROUP)
-        await client.send_message(chat_entity, seed_text)
+        sent_msg = await client.send_message(chat_entity, seed_text)
         last_message_time = time.time()
+        
+        if is_autodelete_active:
+            asyncio.create_task(delete_after_delay(client, chat_entity, sent_msg.id, delay=3.0))
+            
         await bot.send_message(OWNER_ID, "💬 🔥 **Seed Message အောင်မြင်စွာ ပို့ပြီးပါပြီ။ စကားဝိုင်း လည်ပတ်နေပါပြီ Chief!**")
     except Exception as e:
         await bot.send_message(OWNER_ID, f"❌ စကားစတင်ရန် Seed Message ပို့ခြင်း ကျရှုံးပါသည်- {e}")
@@ -715,10 +801,11 @@ async def startup():
     logging.info("⏳ System starting up and loading Cross-Talk Simulator Engine...")
     
     asyncio.create_task(start_dummy_web_server())
-    asyncio.create_task(crosstalk_supervisor()) # No.3 Supervisor အား နောက်ကွယ်မှ စတင်မောင်းနှင်ခြင်း
+    asyncio.create_task(crosstalk_supervisor()) 
 
     logging.info("⏳ Loading Simulator Accounts from MongoDB...")
     cursor_talkers = usertalking_col.find({})
+    async Gear = []
     async for doc in cursor_talkers:
         try:
             cl = TelegramClient(StringSession(doc["session"]), APP_ID, APP_HASH)
