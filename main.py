@@ -124,7 +124,7 @@ async def on_userbot_message(event):
 
     # Userbot အချင်းချင်း စကားပြန်ပြောတာဆိုရင် Loop ပတ်ပြီး စပန်းတာ သက်သာအောင် 40% ပဲ စာပြန်ခွင့်ပေးမည်
     if is_userbot:
-        if random.random() > 0.40:
+        if random.random() > 0.90:
             return
 
     if last_processed_msg_id == event.id:
@@ -150,7 +150,7 @@ async def on_userbot_message(event):
 
     try:
         reply_text = None
-        should_reply = random.random() < 0.60
+        should_reply = random.random() < 0.90
         
         if should_reply:
             match_pipeline = [
