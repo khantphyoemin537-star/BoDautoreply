@@ -13,7 +13,7 @@ from telethon.tl.functions.account import UpdateProfileRequest
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.utils import get_peer_id
 from telethon.tl.functions.phone import JoinGroupCallRequest
-from telethon.tl.types import InputGroupCall, UpdateGroupCall
+from telethon.tl.types import InputGroupCall, UpdateGroupCall, MessageEntityMention, MessageEntityMentionName
 
 # Setup basic logging to see bot activity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -99,6 +99,23 @@ async def handle_voice_chat_updates(event):
             for cl_id, cl in talking_clients.items():
                 asyncio.create_task(join_voice_chat(cl_id, cl, TARGET_GROUP))
                 await asyncio.sleep(1.0)
+
+def has_mention(message):
+    """ မက်ဆေ့ခ်ျထဲတွင် @mention သို့မဟုတ် Username မပါသော နာမည် Mention များ ပါဝင်နေသလား စစ်ဆေးခြင်း """
+    if not message or not message.text:
+        return False
+        
+    # Telegram ရဲ့ Native Mention Entities စစ်ဆေးခြင်း (@username ရော၊ နာမည်ကိုနှိပ်ရင် Profile ပွင့်တဲ့ Mention ပါအကျုံးဝင်သည်)
+    if message.entities:
+        for entity in message.entities:
+            if isinstance(entity, (MessageEntityMention, MessageEntityMentionName)):
+                return True
+                
+    # စာသားထဲတွင် @ ပါဝင်နေပါကလည်း Backup အနေဖြင့် ဖယ်ထုတ်ရန်
+    if '@' in message.text:
+        return True
+        
+    return False
 
 # ==========================================
 # 🧠 DB SEARCH UTILITY FUNCTION
@@ -224,8 +241,16 @@ async def on_userbot_message(event):
     last_message_time = time.time()  # အချိန်ကို နောက်ဆုံးအခြေအနေသို့ မွမ်းမံခြင်း
 
     user_text = event.message.text.strip().lower() if event.message.text else ""
-    if not user_text or user_text.startswith('.') or user_text.startswith('/'):
+    if not user_text:
         return
+
+    # ✨ Mention ပါဝင်နေပါက မပြောရန်၊ Reply မပြန်ရန် ချက်ချင်းကျော်မည်
+    if has_mention(event.message):
+        return
+
+    if user_text.startswith('.') or user_text.startswith('/'):
+        return
+
 
     available_ids = [uid for uid in talking_clients.keys() if uid != event.sender_id]
     if not available_ids:
@@ -325,9 +350,13 @@ async def start_data_scraping(group_arg):
             if not msg.text:
                 continue
                 
+            # ✨ Mention (Tag) ခေါ်ထားသော မက်ဆေ့ခ်ျများကို DB ထဲမမှတ်မိစေရန် ကျော်သွားခြင်း
+            if has_mention(msg):
+                continue
+                
             text_clean = msg.text.strip()
             msg_cache[msg.id] = text_clean
-            
+        
             # Reply မက်ဆေ့ခ်ျ ဖြစ်ပါက Context Database ထဲသို့ သိမ်းဆည်းခြင်း
             if msg.reply_to and msg.reply_to.reply_to_msg_id in msg_cache:
                 parent_text = msg_cache[msg.reply_to.reply_to_msg_id]
