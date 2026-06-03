@@ -243,10 +243,6 @@ async def handle_random_people_reply(event):
         async with bot1.action(chat_entity, 'typing'):
             await asyncio.sleep(random.uniform(1.0, 2.0))
         msg1 = await bot1.send_message(chat_entity, reply_1, reply_to=event.id)
-
-        # /ဖျက်မည် စနစ် On ထားပါက ၃ စက္ကန့်အကြာတွင် ဖျက်ပစ်ခြင်း
-        if is_autodelete_active:
-            asyncio.create_task(delete_after_delay(bot1, chat_entity, msg1.id, delay=3.0))
             
     except Exception as e:
         logging.error(f"❌ Error in Random People Reply System: {e}")
@@ -280,7 +276,7 @@ async def on_userbot_message(event):
         return
 
     if is_userbot:
-        if random.random() > 0.90:
+        if random.random() > 0.40:
             return
 
     if last_processed_msg_id == event.id:
@@ -323,7 +319,7 @@ async def on_userbot_message(event):
     client = talking_clients[chosen_id]
 
     try:
-        should_reply = random.random() < 0.90
+        should_reply = random.random() < 0.50
         reply_text = await fetch_smart_reply(user_text, should_reply=should_reply)
 
         if current_speed == 1:    
@@ -348,10 +344,6 @@ async def on_userbot_message(event):
             sent_msg = await client.send_message(chat_entity, reply_text)
             
         last_message_time = time.time() 
-
-        # /ဖျက်မည် စနစ် On ထားပါက ၃ စက္ကန့်အကြာတွင် ဖျက်ပစ်ခြင်း
-        if is_autodelete_active:
-            asyncio.create_task(delete_after_delay(client, chat_entity, sent_msg.id, delay=3.0))
 
     except errors.rpcerrorlist.FloodWaitError as e:
         await asyncio.sleep(e.seconds)
