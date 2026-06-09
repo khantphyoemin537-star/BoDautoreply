@@ -1,9 +1,26 @@
 import logging
 import re
+import os
+import threading
+from flask import Flask
 from telethon import TelegramClient, events, Button
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
+
+# ========================================================
+# 🌐 RENDER PORT BINDING & KEEP-ALIVE SYSTEM (FLASK)
+# ========================================================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "⚡ Super Calculator Bot is Running Perfect! 🔥"
+
+def run_flask():
+    # Render က ပေးမယ့် Dynamic PORT ကို ဖတ်မယ်၊ မရှိရင် Default 10000 ကို သုံးမယ်
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURATION ---
 API_ID = 31920527
@@ -23,11 +40,10 @@ def calc_keyboard(user_id):
     ]
 
 # ========================================================
-# ⚡ SYSTEM 1: AUTO-TEXT CALCULATOR (စာသားပို့ရုံဖြင့် အလိုအလျောက်တွက်ပေးသည့်စနစ်)
+# ⚡ SYSTEM 1: AUTO-TEXT CALCULATOR
 # ========================================================
 @bot.on(events.NewMessage)
 async def auto_text_calculator(event):
-    # Command တွေဆိုရင် ဒီစနစ်ထဲကနေ ကျော်သွားမယ်
     if event.text.startswith('/'):
         return
         
@@ -35,26 +51,18 @@ async def auto_text_calculator(event):
     if not text:
         return
 
-    # လူသားတွေအသုံးများတဲ့ သင်္ကေတတွေကို ကုဒ်သင်္ကေတအဖြစ် ပြောင်းလဲခြင်း
-    # ^ ကို Python ရဲ့ Power (**) အဖြစ်ပြောင်းပေးထားလို့ ဘယ်လောက်ကြီးတဲ့ထပ်ညွှန်းမဆို တွက်လို့ရမယ်
     math_expr = text.replace("÷", "/").replace("×", "*").replace("^", "**")
 
-    # စာသားထဲမှာ သင်္ချာတွက်ချက်မှုဆိုင်ရာ သင်္ကေတတွေပဲ ပါ၊ မပါ စစ်ဆေးခြင်း (လုံခြုံရေးအရ)
-    # ကိန်းဂဏန်းသီးသန့် (ဥပမာ "111") ပို့ရင် Reply မပြန်အောင် Operator တစ်ခုခုပါဝင်မှ အလုပ်လုပ်စေမယ်
     if re.match(r'^[0-9.+\-*/()%\s]+$', math_expr) and any(op in math_expr for op in "+-*/%"):
         try:
-            # လွန်စွာကြီးမားသော ထပ်ညွှန်းများကြောင့် Bot Crash မဖြစ်စေရန် ကာကွယ်ခြင်း (ဥပမာ 9^9^9^9)
             if "**" in math_expr and len(math_expr) > 20:
                 return
 
-            # စိတ်ချရသော ပတ်ဝန်းကျင်တွင် တွက်ချက်ခြင်း
             result = eval(math_expr, {"__builtins__": None}, {})
 
-            # အကယ်၍ အဖြေက ဒသမကိန်းဖြစ်ပြီး .0 နဲ့ဆုံးရင် (ဥပမာ 5.0) ဆိုရင် ကိန်းပြည့် (5) အဖြစ်ပြောင်းမယ်
             if isinstance(result, float) and result.is_integer():
                 result = int(result)
 
-            # မင်းတောင်းဆိုထားတဲ့ ပုံစံအတိုင်း ပို့ပေးခြင်း
             reply_text = (
                 f"`{text} = {result}`\n\n"
                 f"📣 For support - @Rashxdl"
@@ -62,11 +70,10 @@ async def auto_text_calculator(event):
             await event.reply(reply_text)
             
         except Exception:
-            # သင်္ချာပုံစံမှားနေရင် (ဥပမာ 111++2) စကားပြောခန်းတွေထဲမှာ ရှုပ်မသွားအောင် ငြိမ်နေပေးမယ်
             pass
 
 # ========================================================
-# ⚡ SYSTEM 2: INTERACTIVE CALCULATOR (ခလုတ်နှိပ်တွက်လိုသူများအတွက်)
+# ⚡ SYSTEM 2: INTERACTIVE CALCULATOR
 # ========================================================
 @bot.on(events.NewMessage(pattern=r'(?i)^/(start|calc)'))
 async def start_calc(event):
@@ -174,5 +181,13 @@ async def handle_calc(event):
             pass
     await event.answer()
 
-print("⚡ Super Calculator Bot is running perfectly with Auto-Text Engine...")
-bot.run_until_disconnected()
+# ========================================================
+# MULTI-THREAD EXECUTION GRID
+# ========================================================
+if __name__ == '__main__':
+    # Flask Web Server ကို Thread သီးသန့်နဲ့ Background မှာ Run ပေးခြင်း (Render Port Binding အတွက်)
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    print("⚡ Super Calculator Bot is running perfectly with Auto-Text Engine...")
+    bot.run_until_disconnected()
+
