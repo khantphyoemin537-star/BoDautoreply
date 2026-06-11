@@ -2,3 +2,4 @@ telethon
 motor
 cryptography
 flask
+deep-translator
