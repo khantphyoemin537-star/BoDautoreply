@@ -4,6 +4,7 @@ import os
 import threading
 from flask import Flask
 from telethon import TelegramClient, events, Button
+from deep_translator import GoogleTranslator
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -18,14 +19,13 @@ def home():
     return "⚡ Super Calculator Bot is Running Perfect! 🔥"
 
 def run_flask():
-    # Render က ပေးမယ့် Dynamic PORT ကို ဖတ်မယ်၊ မရှိရင် Default 10000 ကို သုံးမယ်
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURATION ---
 API_ID = 31920527
 API_HASH = '32009b7d9db347c3dce25ace64f87399'
-BOT_TOKEN = '8922005521:AAEV0Sdb72DuWUxH5kgfF3gBAxwSlsnFy7c'
+BOT_TOKEN = '8616292394:AAHDrxaMCvsUiVf985mUCjCQSA7LN4psHE0'
 
 bot = TelegramClient('calc_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
@@ -90,7 +90,6 @@ async def start_calc(event):
         text += f"💼 For business - @Rashxdl\n💡 Use \" + - * / \"\n"
         
     text += (
-        f"⚡ ━━━━━━━━━━━━━━━━━━━━ ⚡\n"
         f"🔢 **Expression:** `0`\n\n"
         f"📣 For support - @Rashxdl"
     )
@@ -169,7 +168,6 @@ async def handle_calc(event):
         new_text += f"💼 For business - @Rashxdl\n💡 Use \" + - * / \"\n"
         
     new_text += (
-        f"⚡ ━━━━━━━━━━━━━━━━━━━━ ⚡\n"
         f"🔢 **Expression:** `{display_expr}`\n\n"
         f"📣 For support - @Rashxdl"
     )
@@ -181,13 +179,47 @@ async def handle_calc(event):
             pass
     await event.answer()
 
+
+# ========================================================
+# ⚡ SYSTEM 3: ENGLISH TRANSLATION ENGINE (/tr)
+# ========================================================
+@bot.on(events.NewMessage(pattern=r'(?i)^/tr(.*)'))
+async def translate_to_english(event):
+    text_to_translate = event.pattern_match.group(1).strip()
+    
+    if not text_to_translate and event.is_reply:
+        reply_msg = await event.get_reply_message()
+        if reply_msg and reply_msg.text:
+            text_to_translate = reply_msg.text
+
+    if not text_to_translate:
+        await event.reply(
+            "❌ **အသုံးပြုပုံ:**\n"
+            "1. `/tr မင်္ဂလာပါ` (စာတိုက်ရိုက်ရိုက်ပြီး ပြန်ခြင်း)\n"
+            "2. တခြားသူစာကို Reply ပြန်ပြီး `/tr` ဟု ရိုက်ခြင်း"
+        )
+        return
+
+    try:
+        translated_text = GoogleTranslator(source='auto', target='en').translate(text_to_translate)
+        
+        reply_text = (
+            f"🔤 **Translated to English:**\n\n"
+            f"`{translated_text}`\n\n"
+            f"📣 For support - @Rashxdl"
+        )
+        await event.reply(reply_text)
+        
+    except Exception as e:
+        logging.error(f"Translation Error: {e}")
+        await event.reply("⚠️ ဘာသာပြန်ရတာ အဆင်မပြေဖြစ်သွားပါတယ်။ ခဏနေမှ ပြန်ကြိုးစားကြည့်ပါ။")
+
+
 # ========================================================
 # MULTI-THREAD EXECUTION GRID
 # ========================================================
 if __name__ == '__main__':
-    # Flask Web Server ကို Thread သီးသန့်နဲ့ Background မှာ Run ပေးခြင်း (Render Port Binding အတွက်)
     threading.Thread(target=run_flask, daemon=True).start()
     
-    print("⚡ Super Calculator Bot is running perfectly with Auto-Text Engine...")
+    print("⚡ Super Calculator Bot is running perfectly with Auto-Text & Translation Engine...")
     bot.run_until_disconnected()
-
